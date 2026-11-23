@@ -25,6 +25,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let firstRun: Bool
     let hotkeys = HotkeyCenter()
     private let power = PowerMonitor()
+    private let usb = USBMonitor()
     private var statusItem: NSStatusItem!
     private var settingsWindow: SettingsWindowController?
     private(set) lazy var settingsModel = SettingsModel(app: self)
@@ -56,7 +57,11 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             self.switchAsync(to: b.input, source: "hotkey")
         }
         let failures = registerHotkeys()
-        power.onWillSleep = { [weak self] in self?.onWillSleep() }
+        usb.onInput = { [weak self] input in self?.switchAsync(to: input, source: "usb") }
+        usb.onError = { message in Notifier.shared.post("USB", message) }
+        usb.configure(cfg.usb)
+        power.onWillSleep = { [weak self] in self?.usb.suspend(); self?.onWillSleep() }
+        power.onDidWake = { [weak self] in self?.usb.resume() }
         power.start()
 
         let ws = NSWorkspace.shared.notificationCenter
@@ -106,6 +111,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        usb.stop()
         hotkeys.unregisterAll()
         AppLog.log("Exit")
     }
@@ -192,6 +198,9 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if new.language != cfg.language { I18n.apply(new.language) }
         if new.appearance != cfg.appearance { applyAppearance(new.appearance) }
         let hotkeysChanged = new.bindings != cfg.bindings || invalidRows != self.invalidRows
+        if new.usb != cfg.usb || new.monitor != cfg.monitor || new.monitorName != cfg.monitorName {
+            usb.configure(new.usb)
+        }
         cfg = new
         self.invalidRows = invalidRows
         updateTooltip()

@@ -47,6 +47,7 @@ One monitor, two computers – say a Windows PC on HDMI and a MacBook on USB‑C
 - **Hotkeys** – up to three global shortcuts, each switching to its own input (for example `Ctrl+Alt+Win+→` for the Mac).
 - **Switch before shutdown** – flips the input once shutdown is certain. Restarts, sign-outs and installers closing the app are recognised and skipped.
 - **Optional switch before sleep.**
+- **USB switching (this fork)** – choose a USB device and independently switch on connection or disconnection. Windows and macOS; disabled by default. [Setup guide](docs/usb-switching.md).
 - **Tray menu** – switch inputs, toggle the shutdown switch and start-up, open settings and the log.
 - **Knows your monitor** – reads the current input and the inputs the monitor reports, so you don't have to guess codes.
 - **Small and native** – one ~600 KB executable, no runtime, no admin rights, no external tools. It calls the Windows Monitor Configuration API (`dxva2.dll`) directly.
@@ -114,6 +115,10 @@ Settings live in `%APPDATA%\DdcSwitch\config.ini`. The settings window writes it
 | `skip_on_restart` | `true` | Don't switch when Windows restarts |
 | `sleep_switch` | `false` | Also switch before sleep |
 | `notify_success` | `false` | Show a notification after every switch, not only on failure |
+| `usb_enabled` | `false` | Enable USB-triggered switching |
+| `usb_device` | | USB vendor:product ID in hexadecimal, e.g. `1234:5678` |
+| `usb_connect_input` | | Input on connection; blank disables this action |
+| `usb_disconnect_input` | | Input on disconnection; blank disables this action |
 
 The log is `%APPDATA%\DdcSwitch\DdcSwitch.log`.
 
@@ -123,6 +128,7 @@ Without arguments DdcSwitch runs in the tray; starting it again opens the settin
 
 ```text
 DdcSwitch.exe --list            List DDC/CI monitors
+DdcSwitch.exe --list-usb        List USB devices for the trigger picker
 DdcSwitch.exe --get             Read the current input
 DdcSwitch.exe --set 25          Switch input
 DdcSwitch.exe --caps            Read the capabilities string and supported inputs

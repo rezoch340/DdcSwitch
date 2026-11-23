@@ -13,6 +13,8 @@ mod icon;
 mod icon_art;
 mod settings;
 mod shutdown;
+mod usb;
+mod usb_strings;
 
 use std::cell::RefCell;
 use std::path::PathBuf;
@@ -73,6 +75,7 @@ struct App {
     hwnd: HWND,
     cfg: Config,
     icon: HICON,
+    usb: usb::Watcher,
 }
 
 thread_local! {
@@ -185,7 +188,9 @@ fn run_gui(autostarted: bool) {
         };
 
         TASKBAR_CREATED.store(RegisterWindowMessageW(w!("TaskbarCreated")), Ordering::Relaxed);
-        APP.with(|a| *a.borrow_mut() = Some(App { hwnd, cfg: cfg.clone(), icon: icon_small }));
+        let mut usb = usb::Watcher::default();
+        usb.configure(hwnd, &cfg.usb);
+        APP.with(|a| *a.borrow_mut() = Some(App { hwnd, cfg: cfg.clone(), icon: icon_small, usb }));
 
         if let Err(e) = SetProcessShutdownParameters(SHUTDOWN_LEVEL, 0) {
             applog::log(format!("SetProcessShutdownParameters failed: {e}"));
@@ -246,6 +251,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             LRESULT(0)
         }
         WM_QUERYENDSESSION => {
+            with_app(|app| app.usb.suspend(hwnd));
             applog::log(format!("WM_QUERYENDSESSION (lParam=0x{:08X})", lparam.0 as u32));
             LRESULT(1)
         }
@@ -254,14 +260,32 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                 on_end_session(hwnd, lparam.0 as u32);
             } else {
                 applog::log("WM_ENDSESSION(FALSE): shutdown was cancelled");
+                with_app(|app| app.usb.resume(hwnd));
             }
             LRESULT(0)
         }
         WM_POWERBROADCAST => {
             if wparam.0 as u32 == PBT_APMSUSPEND {
+                with_app(|app| app.usb.suspend(hwnd));
                 on_suspend();
+            } else if matches!(wparam.0 as u32, PBT_APMRESUMEAUTOMATIC | PBT_APMRESUMESUSPEND) {
+                with_app(|app| app.usb.resume(hwnd));
             }
             LRESULT(1)
+        }
+        WM_DEVICECHANGE => {
+            // DBT_DEVNODES_CHANGED is broadcast to top-level windows for USB changes.
+            if matches!(wparam.0, 0x0007 | 0x8000 | 0x8004) {
+                with_app(|app| app.usb.changed(hwnd));
+            }
+            LRESULT(1)
+        }
+        WM_TIMER if wparam.0 == usb::USB_TIMER => {
+            let input = with_app(|app| app.usb.timer(hwnd)).flatten();
+            if let Some(input) = input {
+                switch_async(hwnd, &current_config(), input, "usb");
+            }
+            LRESULT(0)
         }
         WM_DESTROY => {
             settings::close();
@@ -420,6 +444,9 @@ pub fn apply_settings(new: Config, autostart_on: bool) -> Vec<String> {
     }
     i18n::apply(&new.language);
     let Some(hwnd) = with_app(|a| {
+        if a.cfg.usb != new.usb || a.cfg.monitor != new.monitor || a.cfg.monitor_name != new.monitor_name {
+            a.usb.configure(a.hwnd, &new.usb);
+        }
         a.cfg = new.clone();
         a.hwnd
     }) else {

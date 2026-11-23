@@ -36,6 +36,7 @@ struct Config: Equatable {
     var language = "auto"
     /// "auto" (follow the system), "light" or "dark". macOS only; Windows ignores the key.
     var appearance = "auto"
+    var usb = USBConfig()
 
     /// Loads the config file; `existed` is false when no file existed yet.
     static func load(from url: URL = Paths.configFile) -> (config: Config, existed: Bool) {
@@ -69,6 +70,10 @@ struct Config: Equatable {
         case "sleep_switch": sleepSwitch = flag
         case "notify_success": notifySuccess = flag
         case "language": language = value
+        case "usb_enabled": usb.enabled = flag
+        case "usb_device": usb.device = usbDeviceID(value) ?? ""
+        case "usb_connect_input": usb.connectInput = parseInput(value)
+        case "usb_disconnect_input": usb.disconnectInput = parseInput(value)
         case "appearance": appearance = ["light", "dark"].contains(value.lowercased()) ? value.lowercased() : "auto"
         default:
             // hotkeyN, hotkeyN_enabled, hotkeyN_name, hotkeyN_input
@@ -107,6 +112,9 @@ struct Config: Equatable {
         s += "skip_on_restart = \(skipOnRestart)\n"
         s += "sleep_switch = \(sleepSwitch)\n"
         s += "notify_success = \(notifySuccess)\n"
+        s += "usb_enabled = \(usb.enabled)\nusb_device = \(usb.device)\n"
+        s += "usb_connect_input = \(usb.connectInput.map(String.init) ?? "")\n"
+        s += "usb_disconnect_input = \(usb.disconnectInput.map(String.init) ?? "")\n"
         return s
     }
 
@@ -133,7 +141,9 @@ enum Paths {
     }
 
     static var logFile: URL {
-        FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Logs/DdcSwitch/DdcSwitch.log")
+        // Keep diagnostic runs with --config isolated, just like on Windows.
+        if configFile != defaultConfigFile { return configFile.deletingLastPathComponent().appendingPathComponent("DdcSwitch.log") }
+        return FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Logs/DdcSwitch/DdcSwitch.log")
     }
 
     static func setConfigFile(_ url: URL?) {

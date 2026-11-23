@@ -9,6 +9,7 @@ enum CLI {
 
     Without arguments DdcSwitch runs in the menu bar. Diagnostic commands:
       --list            list monitors
+      --list-usb        list connected USB devices (VID:PID)
       --get             read the current input source
       --set <input>     switch input (number, 0x hex, or an alias such as hdmi1/dp1/usbc)
       --caps            read the capabilities string and supported inputs
@@ -33,7 +34,7 @@ enum CLI {
             case "--set":
                 command = ("set", args[safe: i + 1])
                 i += 1
-            case "--list", "--get", "--caps", "--quit":
+            case "--list", "--list-usb", "--get", "--caps", "--quit":
                 command = (String(args[i].dropFirst(2)), nil)
             case "--detect":
                 command = ("detect", nil)
@@ -45,6 +46,8 @@ enum CLI {
 
         do {
             switch (command?.name, command?.value) {
+            case ("list-usb", _):
+                for device in try USBDevice.list() { print(device.label) }
             case ("list", _):
                 let names = DDC.listNames()
                 print("\(names.count) DDC/CI monitor(s) detected:")

@@ -153,6 +153,7 @@ final class HotkeyCenter {
 
 final class PowerMonitor {
     var onWillSleep: (() -> Void)?
+    var onDidWake: (() -> Void)?
     private var root: io_connect_t = 0
     private var port: IONotificationPortRef?
     private var notifier: io_object_t = 0
@@ -174,6 +175,7 @@ final class PowerMonitor {
     // iokit_common_msg(0x270) / (0x280): the C macros are not imported into Swift.
     private static let canSystemSleep: natural_t = 0xE000_0270
     private static let systemWillSleep: natural_t = 0xE000_0280
+    private static let systemHasPoweredOn: natural_t = 0xE000_0300
 
     private func handle(_ messageType: natural_t, _ argument: UnsafeMutableRawPointer?) {
         switch messageType {
@@ -182,6 +184,8 @@ final class PowerMonitor {
         case PowerMonitor.systemWillSleep:
             onWillSleep?()
             IOAllowPowerChange(root, Int(bitPattern: argument))
+        case PowerMonitor.systemHasPoweredOn:
+            onDidWake?()
         default:
             break
         }

@@ -1,5 +1,6 @@
 // Settings persisted as a small `key = value` file in %APPDATA%\DdcSwitch.
 
+use crate::usb::{self, UsbConfig};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -39,6 +40,7 @@ pub struct Config {
     pub notify_success: bool,
     /// "auto" or a language code from `i18n::LANGUAGES`.
     pub language: String,
+    pub usb: UsbConfig,
 }
 
 impl Default for Config {
@@ -69,6 +71,7 @@ impl Default for Config {
             sleep_switch: false,
             notify_success: false,
             language: "auto".into(),
+            usb: UsbConfig::default(),
         }
     }
 }
@@ -121,6 +124,10 @@ impl Config {
             "sleep_switch" => self.sleep_switch = flag(),
             "notify_success" => self.notify_success = flag(),
             "language" => self.language = val.to_string(),
+            "usb_enabled" => self.usb.enabled = flag(),
+            "usb_device" => self.usb.device = usb::device_id(val).unwrap_or_default(),
+            "usb_connect_input" => self.usb.connect_input = parse_input(val),
+            "usb_disconnect_input" => self.usb.disconnect_input = parse_input(val),
             _ => {
                 // hotkeyN, hotkeyN_enabled, hotkeyN_name, hotkeyN_input
                 let Some(rest) = key.strip_prefix("hotkey") else { return };
@@ -143,6 +150,13 @@ impl Config {
     }
 
     pub fn save(&self) -> io::Result<()> {
+        if let Some(dir) = config_path().parent() {
+            fs::create_dir_all(dir)?;
+        }
+        fs::write(config_path(), self.serialized())
+    }
+
+    fn serialized(&self) -> String {
         let mut s = String::from("# DdcSwitch settings (also editable from the tray icon -> Settings)\r\n");
         s += &format!("language = {}\r\n", self.language);
         s += &format!("monitor = {}\r\nmonitor_name = {}\r\n\r\n", self.monitor, self.monitor_name);
@@ -158,10 +172,16 @@ impl Config {
         s += &format!("skip_on_restart = {}\r\n", self.skip_on_restart);
         s += &format!("sleep_switch = {}\r\n", self.sleep_switch);
         s += &format!("notify_success = {}\r\n", self.notify_success);
-        if let Some(dir) = config_path().parent() {
-            fs::create_dir_all(dir)?;
-        }
-        fs::write(config_path(), s)
+        s += &format!("usb_enabled = {}\r\nusb_device = {}\r\n", self.usb.enabled, self.usb.device);
+        s += &format!(
+            "usb_connect_input = {}\r\n",
+            self.usb.connect_input.map(|input| input.to_string()).unwrap_or_default()
+        );
+        s += &format!(
+            "usb_disconnect_input = {}\r\n",
+            self.usb.disconnect_input.map(|input| input.to_string()).unwrap_or_default()
+        );
+        s
     }
 
     /// "MacBook (USB-C) [25]" style title for an input value, using a binding name if one targets it.
@@ -353,6 +373,31 @@ pub fn parse_hotkey(s: &str) -> Option<(u32, u32)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn usb_config_roundtrip_and_invalid_actions() {
+        let mut config = Config::default();
+        assert!(!config.usb.active());
+        config.apply("usb_enabled", "true");
+        config.apply("usb_device", "0b05:1234");
+        config.apply("usb_disconnect_input", "7");
+        config.apply("usb_connect_input", "0x08");
+        let mut parsed = Config::default();
+        for line in config.serialized().lines() {
+            if let Some((key, value)) = line.split_once('=') {
+                parsed.apply(key.trim(), value.trim());
+            }
+        }
+        assert_eq!(parsed.usb, config.usb);
+        assert_eq!(parsed.usb.disconnect_input, Some(7));
+        assert_eq!(parsed.usb.connect_input, Some(8));
+        for invalid in ["", "0", "65536", "invalid"] {
+            parsed.apply("usb_connect_input", invalid);
+            assert_eq!(parsed.usb.connect_input, None);
+        }
+        parsed.apply("usb_device", "invalid");
+        assert!(!parsed.usb.active());
+    }
 
     #[test]
     fn hotkey_roundtrip() {

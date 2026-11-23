@@ -13,6 +13,9 @@ use crate::config::{self, Binding, Config, MOD_ALT, MOD_CONTROL, MOD_SHIFT, MOD_
 use crate::i18n::{self, fmt, t};
 use crate::{autostart, ddc};
 
+#[path = "usb_settings.rs"]
+mod usb_dialog;
+
 const CLASS: PCWSTR = w!("DdcSwitch.Settings");
 const WM_PROBE_DONE: u32 = WM_APP + 20;
 
@@ -29,6 +32,7 @@ const IDC_AUTOSTART: i32 = 1205;
 const IDC_NOTIFY: i32 = 1206;
 const IDC_LANGUAGE: i32 = 1207;
 const IDC_OPEN_LOG: i32 = 1301;
+const IDC_USB: i32 = 1302;
 
 // Control styles / messages not worth importing from several modules.
 const STYLE_PUSHBUTTON: u32 = 0x0;
@@ -100,6 +104,7 @@ pub fn set_icons(small: HICON, big: HICON) {
 }
 
 pub fn register_class(hinst: HINSTANCE) {
+    usb_dialog::register_class(hinst);
     HINST.with(|c| c.set(hinst.0 as isize));
     unsafe {
         let wc = WNDCLASSEXW {
@@ -121,6 +126,9 @@ fn ui_hwnd() -> Option<HWND> {
 
 /// Gives the settings window keyboard navigation (Tab, Enter, Esc).
 pub fn is_dialog_message(msg: &MSG) -> bool {
+    if usb_dialog::is_dialog_message(msg) {
+        return true;
+    }
     match ui_hwnd() {
         Some(h) => unsafe { IsDialogMessageW(h, msg).as_bool() },
         None => false,
@@ -370,6 +378,7 @@ pub fn open(cfg: Config) {
         let language = b.combo(false, 180, 494, 240, IDC_LANGUAGE);
 
         b.button(tr.btn_open_log, 12, 540, 140, IDC_OPEN_LOG, false);
+        b.button(crate::usb_strings::text().title, 164, 540, 160, IDC_USB, false);
         b.button(tr.btn_ok, 476, 540, 100, IDC_OK, true);
         b.button(tr.btn_cancel, 588, 540, 100, IDC_CANCEL, false);
 
@@ -624,6 +633,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                     probe();
                 }
                 IDC_OPEN_LOG => crate::open_log(),
+                IDC_USB => usb_dialog::open(),
                 IDC_SD_ENABLED => update_enabled_states(),
                 id if id >= IDC_ROW_BASE && id < IDC_ROW_BASE + 100 && (id - IDC_ROW_BASE) % 10 == 0 => {
                     update_enabled_states()

@@ -102,6 +102,7 @@ struct SettingsRoot: View {
             case .monitor: MonitorPane(model: model)
             case .shortcuts: ShortcutsPane(model: model)
             case .power: PowerPane(model: model)
+            case .usb: USBPane(model: model)
             }
         }
         .formStyle(.grouped)
@@ -329,6 +330,42 @@ struct PowerPane: View {
 }
 
 // ---------------------------------------------------------------------------
+
+struct USBPane: View {
+    @ObservedObject var model: SettingsModel
+
+    var body: some View {
+        let copy = USBStrings.current
+        Form {
+            Section {
+                Toggle(copy.enabled, isOn: $model.usbEnabled)
+            }
+            Section {
+                LabeledContent(copy.device) {
+                    InputComboBox(text: $model.usbDeviceText, items: model.usbDevices)
+                        .frame(width: 300)
+                        .accessibilityLabel(copy.device)
+                }
+                Button(copy.refresh) { model.refreshUSB() }
+                if let issue = model.usbListIssue { Issue(text: issue) }
+                LabeledContent(copy.connect) {
+                    InputComboBox(text: $model.usbConnectText, items: [""] + model.inputChoices)
+                        .frame(width: 180)
+                        .accessibilityLabel(copy.connect)
+                }
+                LabeledContent(copy.disconnect) {
+                    InputComboBox(text: $model.usbDisconnectText, items: [""] + model.inputChoices)
+                        .frame(width: 180)
+                        .accessibilityLabel(copy.disconnect)
+                }
+            } footer: { Footnote(text: copy.hint) }
+            .disabled(!model.usbEnabled)
+            if let issue = model.usbIssue { Section { Issue(text: issue) } }
+            Section { Footnote(text: copy.footer) }
+            if let error = model.saveError { Section { Issue(text: error) } }
+        }
+    }
+}
 
 /// An editable NSComboBox: pick a reported input or type any code.
 struct InputComboBox: NSViewRepresentable {

@@ -6,7 +6,7 @@ import Combine
 
 final class SettingsModel: ObservableObject {
     enum Pane: String, CaseIterable {
-        case general, monitor, shortcuts, power
+        case general, monitor, shortcuts, power, usb
 
         var symbol: String {
             switch self {
@@ -14,6 +14,7 @@ final class SettingsModel: ObservableObject {
             case .monitor: return "display"
             case .shortcuts: return "keyboard"
             case .power: return "power"
+            case .usb: return "cable.connector"
             }
         }
 
@@ -23,6 +24,7 @@ final class SettingsModel: ObservableObject {
             case .monitor: return t.paneMonitor
             case .shortcuts: return t.paneShortcuts
             case .power: return t.panePower
+            case .usb: return USBStrings.current.title
             }
         }
     }
@@ -67,6 +69,14 @@ final class SettingsModel: ObservableObject {
     @Published var sleepSwitch = false { didSet { commit() } }
     @Published private(set) var shutdownIssue: String?
 
+    @Published var usbEnabled = false { didSet { commit() } }
+    @Published var usbDeviceText = "" { didSet { commit() } }
+    @Published var usbConnectText = "" { didSet { commit() } }
+    @Published var usbDisconnectText = "" { didSet { commit() } }
+    @Published private(set) var usbDevices: [String] = []
+    @Published private(set) var usbListIssue: String?
+    @Published private(set) var usbIssue: String?
+
     @Published var notifySuccess = false { didSet { commit() } }
     @Published var language = "auto" { didSet { if language != oldValue { commit() } } }
     @Published var appearance = "auto" { didSet { if appearance != oldValue { commit() } } }
@@ -96,6 +106,11 @@ final class SettingsModel: ObservableObject {
         shutdownInputText = inputLabel(cfg.shutdownInput)
         skipOnRestart = cfg.skipOnRestart
         sleepSwitch = cfg.sleepSwitch
+        usbEnabled = cfg.usb.enabled
+        usbDeviceText = cfg.usb.device
+        usbConnectText = cfg.usb.connectInput.map(String.init) ?? ""
+        usbDisconnectText = cfg.usb.disconnectInput.map(String.init) ?? ""
+        refreshUSB()
         notifySuccess = cfg.notifySuccess
         appearance = cfg.appearance
         language = I18n.languages.first { $0.code.caseInsensitiveCompare(cfg.language) == .orderedSame }?.code ?? "auto"
@@ -110,6 +125,13 @@ final class SettingsModel: ObservableObject {
         launchAtLogin = LaunchAtLogin.isEnabled
         loginNeedsApproval = LaunchAtLogin.needsApproval
         loading = was
+    }
+
+    func refreshUSB() {
+        do {
+            usbDevices = try USBDevice.list().map(\.label)
+            usbListIssue = nil
+        } catch { usbListIssue = "\(error)" }
     }
 
     private func setLaunchAtLogin(_ on: Bool) {
@@ -192,6 +214,11 @@ final class SettingsModel: ObservableObject {
         cfg.notifySuccess = notifySuccess
         cfg.language = language
         cfg.appearance = appearance
+        cfg.usb = USBConfig(enabled: usbEnabled, device: usbDeviceID(usbDeviceText) ?? "",
+                            connectInput: parseInput(usbConnectText), disconnectInput: parseInput(usbDisconnectText))
+        validateUSB()
+        // Do not keep an old action armed while the user is editing an invalid value.
+        if usbIssue != nil { cfg.usb.enabled = false }
 
         let languageChanged = cfg.language != app.cfg.language
         saveError = app.apply(cfg, invalidRows: validate(cfg))
@@ -202,6 +229,7 @@ final class SettingsModel: ObservableObject {
     /// Fills in the problems shown under the rows; returns the rows that must not be registered.
     @discardableResult
     private func validate(_ cfg: Config) -> Set<Int> {
+        validateUSB()
         let t = I18n.t
         var invalid = Set<Int>()
         var issues = [String?](repeating: nil, count: rows.count)
@@ -233,5 +261,19 @@ final class SettingsModel: ObservableObject {
         let needsInput = shutdownSwitch || sleepSwitch
         shutdownIssue = needsInput && parseInput(shutdownInputText) == nil ? I18n.fmt(t.errShutdownInput, shutdownInputText) : nil
         return invalid
+    }
+
+    private func validateUSB() {
+        usbIssue = nil
+        guard usbEnabled else { return }
+        for text in [usbConnectText, usbDisconnectText] {
+            if !text.trimmingCharacters(in: .whitespaces).isEmpty && parseInput(text) == nil {
+                usbIssue = USBStrings.current.invalid
+                return
+            }
+        }
+        if usbDeviceID(usbDeviceText) == nil || (parseInput(usbConnectText) == nil && parseInput(usbDisconnectText) == nil) {
+            usbIssue = USBStrings.current.choose
+        }
     }
 }

@@ -13,6 +13,7 @@ const USAGE: &str = "DdcSwitch - switch the monitor input source over DDC/CI
 
 Without arguments DdcSwitch runs in the system tray. Diagnostic commands:
   --list            list monitors
+  --list-usb        list connected USB devices (VID:PID)
   --get             read the current input source
   --set <input>     switch input (number, 0x hex, or an alias such as hdmi1/dp1/usbc)
   --caps            read the capabilities string and supported inputs
@@ -42,13 +43,20 @@ pub fn run(args: &[String]) -> i32 {
                 command = Some(("set", args.get(i + 1).map(|s| s.as_str())));
                 i += 1;
             }
-            c @ ("--list" | "--get" | "--caps" | "--detect" | "--quit") => command = Some((c.trim_start_matches('-'), None)),
+            c @ ("--list" | "--list-usb" | "--get" | "--caps" | "--detect" | "--quit") => {
+                command = Some((c.trim_start_matches('-'), None))
+            }
             _ => command = Some(("help", None)),
         }
         i += 1;
     }
 
     let result: Result<(), String> = match command {
+        Some(("list-usb", _)) => crate::usb::list_devices().map(|devices| {
+            for (identity, name) in devices {
+                println!("{identity} — {name}");
+            }
+        }),
         Some(("list", _)) => {
             let names = ddc::list_names();
             println!("{} DDC/CI monitor(s) detected:", names.len());
