@@ -5,7 +5,6 @@ struct USBStrings {
     let device: String
     let refresh: String
     let connect: String
-    let disconnect: String
     let hint: String
     let footer: String
     let invalid: String
@@ -20,24 +19,24 @@ struct USBStrings {
     }
 
     static let english = USBStrings(
-        title: "USB switching", enabled: "Switch input on USB changes", device: "USB device", refresh: "Refresh devices",
-        connect: "When connected", disconnect: "When disconnected",
-        hint: "Leave an action blank to do nothing. Enter a numeric input code if your monitor uses custom values.",
-        footer: "Choose a keyboard, receiver or hub that moves with your USB switch. Use “When disconnected” to let the current computer hand the display to the other one. Devices with the same VID:PID are treated as one group; only the first connection and last disconnection trigger an action. Startup and wake do not switch inputs.",
-        invalid: "Enter a valid input code (1–65535), or leave the action blank.",
-        choose: "Choose a device (VID:PID) and set at least one action.")
+        title: "USB switching", enabled: "Switch input when USB connects", device: "Watched USB device", refresh: "Refresh devices",
+        connect: "Input for this computer",
+        hint: "Select this computer's monitor input. Enter a numeric code if your monitor uses custom values.",
+        footer: "Choose the keyboard or receiver moved by your USB switch. Only this device's arrival switches to this computer. Removal, other devices, startup and wake do not switch inputs. Devices with the same VID:PID are treated as one group.",
+        invalid: "Enter a valid input code (1–65535) for this computer.",
+        choose: "Choose the watched device (VID:PID) and this computer's input.")
     static let chinese = USBStrings(
-        title: "USB 联动", enabled: "USB 插拔时切换输入源", device: "USB 设备", refresh: "刷新设备",
-        connect: "接入时切换到", disconnect: "拔出时切换到",
-        hint: "动作留空表示不切换。显示器使用自定义值时，可直接输入数字代码。",
-        footer: "选择随 USB 切换器移动的键盘、接收器或集线器。建议设置“拔出时切换到”，让当前电脑把画面交给另一台。相同 VID:PID 的设备按一组识别，仅首次接入和最后拔出触发。启动和唤醒不会切换输入源。",
-        invalid: "请输入有效输入源代码（1–65535），或留空禁用该动作。",
-        choose: "请选择设备（VID:PID），并至少设置一个切换动作。")
+        title: "USB 联动", enabled: "USB 接入时切换输入源", device: "监听的 USB 设备", refresh: "刷新设备",
+        connect: "本机输入源",
+        hint: "选择这台电脑连接的显示器输入源；显示器使用自定义值时，可直接输入数字代码。",
+        footer: "选择随切换器移动的键盘或接收器。仅所选设备接入时切到本机；拔出、其他设备插拔、启动和唤醒均不切屏。相同 VID:PID 的同型号设备按一组识别。",
+        invalid: "请输入本机的有效输入源代码（1–65535）。",
+        choose: "请选择监听设备（VID:PID）及本机输入源。")
     static let traditional = USBStrings(
-        title: "USB 連動", enabled: "USB 插拔時切換輸入來源", device: "USB 裝置", refresh: "重新整理裝置",
-        connect: "接入時切換至", disconnect: "拔出時切換至",
-        hint: "動作留空表示不切換。螢幕使用自訂值時，可直接輸入數字代碼。",
-        footer: "選擇隨 USB 切換器移動的鍵盤、接收器或集線器。建議設定「拔出時切換至」，讓目前電腦把畫面交給另一台。相同 VID:PID 的裝置視為一組，僅首次接入和最後拔出觸發。啟動及喚醒不會切換輸入來源。",
-        invalid: "請輸入有效的輸入來源代碼（1–65535），或留空停用此動作。",
-        choose: "請選擇裝置（VID:PID），並至少設定一個切換動作。")
+        title: "USB 連動", enabled: "USB 接入時切換輸入來源", device: "監聽的 USB 裝置", refresh: "重新整理裝置",
+        connect: "本機輸入來源",
+        hint: "選擇這台電腦連接的螢幕輸入來源；螢幕使用自訂值時，可直接輸入數字代碼。",
+        footer: "選擇隨切換器移動的鍵盤或接收器。僅所選裝置接入時切至本機；拔出、其他裝置插拔、啟動及喚醒均不切換。相同 VID:PID 的同型號裝置視為一組。",
+        invalid: "請輸入本機的有效輸入來源代碼（1–65535）。",
+        choose: "請選擇監聽裝置（VID:PID）及本機輸入來源。")
 }

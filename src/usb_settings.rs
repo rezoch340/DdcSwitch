@@ -8,7 +8,6 @@ const IDC_ENABLED: i32 = 2100;
 const IDC_DEVICE: i32 = 2101;
 const IDC_REFRESH: i32 = 2102;
 const IDC_CONNECT: i32 = 2103;
-const IDC_DISCONNECT: i32 = 2104;
 
 struct UsbUi {
     hwnd: HWND,
@@ -16,7 +15,6 @@ struct UsbUi {
     enabled: HWND,
     device: HWND,
     connect: HWND,
-    disconnect: HWND,
     status: HWND,
 }
 
@@ -56,7 +54,7 @@ pub(super) fn open() {
         let hinst = HINSTANCE(HINST.with(|state| state.get()) as *mut _);
         let style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU;
         let extended = WS_EX_CONTROLPARENT;
-        let mut bounds = RECT { left: 0, top: 0, right: scale(700), bottom: scale(360) };
+        let mut bounds = RECT { left: 0, top: 0, right: scale(700), bottom: scale(320) };
         let _ = AdjustWindowRectExForDpi(&mut bounds, style, false, extended, dpi);
         let width = bounds.right - bounds.left;
         let height = bounds.bottom - bounds.top;
@@ -83,23 +81,17 @@ pub(super) fn open() {
         builder.button(copy.refresh, 540, 49, 138, IDC_REFRESH, false);
         builder.label(copy.connect, 22, 94, 180);
         let connect = builder.combo(true, 218, 90, 200, IDC_CONNECT);
-        builder.label(copy.disconnect, 22, 134, 180);
-        let disconnect = builder.combo(true, 218, 130, 200, IDC_DISCONNECT);
-        builder.label(copy.hint, 22, 171, 655);
-        builder.add(w!("STATIC"), copy.footer, 0, WINDOW_EX_STYLE(0), 22, 203, 655, 70, 0);
-        let status = builder.label("", 22, 280, 655);
-        builder.button(t().btn_ok, 466, 320, 100, IDC_OK, true);
-        builder.button(t().btn_cancel, 578, 320, 100, IDC_CANCEL, false);
+        builder.label(copy.hint, 22, 131, 655);
+        builder.add(w!("STATIC"), copy.footer, 0, WINDOW_EX_STYLE(0), 22, 163, 655, 70, 0);
+        let status = builder.label("", 22, 240, 655);
+        builder.button(t().btn_ok, 466, 280, 100, IDC_OK, true);
+        builder.button(t().btn_cancel, 578, 280, 100, IDC_CANCEL, false);
         set_checked(enabled, config.enabled);
-        for control in [connect, disconnect] {
-            fill_input_combo(control, STANDARD_INPUTS);
-            add_item(control, "");
-        }
+        fill_input_combo(connect, STANDARD_INPUTS);
         set_text(device, &config.device);
         set_text(connect, &config.connect_input.map(|input| input.to_string()).unwrap_or_default());
-        set_text(disconnect, &config.disconnect_input.map(|input| input.to_string()).unwrap_or_default());
         USB_UI.with(|state| {
-            *state.borrow_mut() = Some(UsbUi { hwnd, parent, enabled, device, connect, disconnect, status })
+            *state.borrow_mut() = Some(UsbUi { hwnd, parent, enabled, device, connect, status })
         });
         refresh();
         update_enabled();
@@ -132,7 +124,7 @@ fn refresh() {
 fn update_enabled() {
     USB_UI.with(|state| {
         if let Some(dialog) = state.borrow().as_ref() {
-            for control in [dialog.device, dialog.connect, dialog.disconnect] {
+            for control in [dialog.device, dialog.connect] {
                 enable(control, checked(dialog.enabled));
             }
         }
@@ -145,18 +137,13 @@ fn accept(hwnd: HWND) {
         let dialog = state.as_ref()?;
         let enabled = checked(dialog.enabled);
         let connect = get_text(dialog.connect);
-        let disconnect = get_text(dialog.disconnect);
         let config = UsbConfig {
             enabled,
             device: usb::device_id(&get_text(dialog.device)).unwrap_or_default(),
             connect_input: config::parse_input(&connect),
-            disconnect_input: config::parse_input(&disconnect),
         };
         if enabled {
-            if [&connect, &disconnect]
-                .iter()
-                .any(|value| !value.trim().is_empty() && config::parse_input(value).is_none())
-            {
+            if !connect.trim().is_empty() && config::parse_input(&connect).is_none() {
                 return Some(Err(text().invalid));
             }
             if !config.active() {

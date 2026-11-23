@@ -25,17 +25,20 @@ final class USBTests: XCTestCase {
         var config = Config()
         config.parse("monitor = 2\nshutdown_input = 17\n")
         XCTAssertFalse(config.usb.active)
-        config.parse("usb_enabled = true\nusb_device = 0b05:1234\nusb_disconnect_input = 7\nusb_connect_input = 0x08\n")
+        config.parse("usb_enabled = true\nusb_device = 0b05:1234\nusb_disconnect_input = 7\n")
+        XCTAssertFalse(config.usb.active)
+        config.parse("usb_connect_input = 0x08\n")
         XCTAssertTrue(config.usb.active)
-        XCTAssertEqual(config.usb.input(connected: false), 7)
+        XCTAssertNil(config.usb.input(connected: false))
         XCTAssertEqual(config.usb.input(connected: true), 8)
         var parsed = Config()
         parsed.parse(config.serialized())
         XCTAssertEqual(parsed, config)
+        XCTAssertFalse(parsed.serialized().contains("usb_disconnect_input"))
         for invalid in ["", "0", "65536", "invalid"] {
             parsed.parse("usb_connect_input = \(invalid)\n")
             XCTAssertNil(parsed.usb.connectInput)
-            XCTAssertEqual(parsed.usb.disconnectInput, 7)
+            XCTAssertFalse(parsed.usb.active)
         }
         parsed.parse("usb_device = invalid\n")
         XCTAssertFalse(parsed.usb.active)
@@ -49,5 +52,14 @@ final class USBTests: XCTestCase {
         for (devices, result) in zip(snapshots, expected) {
             XCTAssertEqual(presence.observe(devices.contains(identity)), result)
         }
+    }
+
+    func testOnlySelectedKeyboardArrivalsSendCommands() {
+        let config = USBConfig(enabled: true, device: "1234:5678", connectInput: 8)
+        var presence = USBPresence()
+        let snapshots = [[], ["ABCD:EF01"], ["ABCD:EF01", "1234:5678"], ["1234:5678"], [], ["1234:5678"]]
+        let commands = snapshots.compactMap { presence.observe($0.contains(config.device)) }
+            .compactMap { config.input(connected: $0) }
+        XCTAssertEqual(commands, [8, 8])
     }
 }

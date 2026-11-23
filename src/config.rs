@@ -127,7 +127,6 @@ impl Config {
             "usb_enabled" => self.usb.enabled = flag(),
             "usb_device" => self.usb.device = usb::device_id(val).unwrap_or_default(),
             "usb_connect_input" => self.usb.connect_input = parse_input(val),
-            "usb_disconnect_input" => self.usb.disconnect_input = parse_input(val),
             _ => {
                 // hotkeyN, hotkeyN_enabled, hotkeyN_name, hotkeyN_input
                 let Some(rest) = key.strip_prefix("hotkey") else { return };
@@ -176,10 +175,6 @@ impl Config {
         s += &format!(
             "usb_connect_input = {}\r\n",
             self.usb.connect_input.map(|input| input.to_string()).unwrap_or_default()
-        );
-        s += &format!(
-            "usb_disconnect_input = {}\r\n",
-            self.usb.disconnect_input.map(|input| input.to_string()).unwrap_or_default()
         );
         s
     }
@@ -381,6 +376,7 @@ mod tests {
         config.apply("usb_enabled", "true");
         config.apply("usb_device", "0b05:1234");
         config.apply("usb_disconnect_input", "7");
+        assert!(!config.usb.active()); // Legacy removal actions must not become local inputs.
         config.apply("usb_connect_input", "0x08");
         let mut parsed = Config::default();
         for line in config.serialized().lines() {
@@ -389,7 +385,8 @@ mod tests {
             }
         }
         assert_eq!(parsed.usb, config.usb);
-        assert_eq!(parsed.usb.disconnect_input, Some(7));
+        assert_eq!(parsed.usb.input(false), None);
+        assert!(!parsed.serialized().contains("usb_disconnect_input"));
         assert_eq!(parsed.usb.connect_input, Some(8));
         for invalid in ["", "0", "65536", "invalid"] {
             parsed.apply("usb_connect_input", invalid);

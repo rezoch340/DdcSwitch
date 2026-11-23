@@ -73,7 +73,6 @@ struct Config: Equatable {
         case "usb_enabled": usb.enabled = flag
         case "usb_device": usb.device = usbDeviceID(value) ?? ""
         case "usb_connect_input": usb.connectInput = parseInput(value)
-        case "usb_disconnect_input": usb.disconnectInput = parseInput(value)
         case "appearance": appearance = ["light", "dark"].contains(value.lowercased()) ? value.lowercased() : "auto"
         default:
             // hotkeyN, hotkeyN_enabled, hotkeyN_name, hotkeyN_input
@@ -114,7 +113,6 @@ struct Config: Equatable {
         s += "notify_success = \(notifySuccess)\n"
         s += "usb_enabled = \(usb.enabled)\nusb_device = \(usb.device)\n"
         s += "usb_connect_input = \(usb.connectInput.map(String.init) ?? "")\n"
-        s += "usb_disconnect_input = \(usb.disconnectInput.map(String.init) ?? "")\n"
         return s
     }
 

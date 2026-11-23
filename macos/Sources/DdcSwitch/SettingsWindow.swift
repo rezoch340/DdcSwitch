@@ -353,11 +353,6 @@ struct USBPane: View {
                         .frame(width: 180)
                         .accessibilityLabel(copy.connect)
                 }
-                LabeledContent(copy.disconnect) {
-                    InputComboBox(text: $model.usbDisconnectText, items: [""] + model.inputChoices)
-                        .frame(width: 180)
-                        .accessibilityLabel(copy.disconnect)
-                }
             } footer: { Footnote(text: copy.hint) }
             .disabled(!model.usbEnabled)
             if let issue = model.usbIssue { Section { Issue(text: issue) } }

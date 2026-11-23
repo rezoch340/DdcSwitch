@@ -5,10 +5,9 @@ struct USBConfig: Equatable {
     var enabled = false
     var device = ""
     var connectInput: UInt32?
-    var disconnectInput: UInt32?
 
-    var active: Bool { enabled && usbDeviceID(device) != nil && (connectInput != nil || disconnectInput != nil) }
-    func input(connected: Bool) -> UInt32? { connected ? connectInput : disconnectInput }
+    var active: Bool { enabled && usbDeviceID(device) != nil && connectInput != nil }
+    func input(connected: Bool) -> UInt32? { connected ? connectInput : nil }
 }
 
 /// The picker may append a display name. Persist only the hexadecimal VID:PID.

@@ -5,21 +5,18 @@ pub struct UsbConfig {
     pub enabled: bool,
     pub device: String,
     pub connect_input: Option<u32>,
-    pub disconnect_input: Option<u32>,
 }
 
 impl UsbConfig {
     pub fn active(&self) -> bool {
-        self.enabled
-            && device_id(&self.device).is_some()
-            && (self.connect_input.is_some() || self.disconnect_input.is_some())
+        self.enabled && device_id(&self.device).is_some() && self.connect_input.is_some()
     }
 
     pub fn input(&self, connected: bool) -> Option<u32> {
         if connected {
             self.connect_input
         } else {
-            self.disconnect_input
+            None
         }
     }
 }
@@ -108,18 +105,17 @@ mod tests {
     }
 
     #[test]
-    fn actions_are_independent_and_default_off() {
+    fn only_connections_switch_and_default_is_off() {
         let mut config = UsbConfig::default();
         assert!(!config.active());
         config.enabled = true;
         config.device = "1234:5678".into();
         assert!(!config.active());
-        config.disconnect_input = Some(7);
-        assert!(config.active());
         assert_eq!(config.input(true), None);
-        assert_eq!(config.input(false), Some(7));
         config.connect_input = Some(8);
+        assert!(config.active());
         assert_eq!(config.input(true), Some(8));
+        assert_eq!(config.input(false), None);
         config.enabled = false;
         assert!(!config.active());
     }
@@ -140,5 +136,25 @@ mod tests {
         for (devices, result) in snapshots.iter().zip(expected) {
             assert_eq!(presence.observe(devices.contains(&identity)), result);
         }
+    }
+
+    #[test]
+    fn only_selected_keyboard_arrivals_send_commands() {
+        let config = UsbConfig { enabled: true, device: "1234:5678".into(), connect_input: Some(8) };
+        let mut presence = Presence::default();
+        let snapshots = [
+            vec![],
+            vec!["ABCD:EF01"],
+            vec!["ABCD:EF01", "1234:5678"],
+            vec!["1234:5678"],
+            vec![],
+            vec!["1234:5678"],
+        ];
+        let commands: Vec<u32> = snapshots
+            .iter()
+            .filter_map(|devices| presence.observe(devices.contains(&config.device.as_str())))
+            .filter_map(|connected| config.input(connected))
+            .collect();
+        assert_eq!(commands, vec![8, 8]);
     }
 }

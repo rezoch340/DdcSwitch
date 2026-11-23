@@ -47,7 +47,7 @@ One monitor, two computers – say a Windows PC on HDMI and a MacBook on USB‑C
 - **Hotkeys** – up to three global shortcuts, each switching to its own input (for example `Ctrl+Alt+Win+→` for the Mac).
 - **Switch before shutdown** – flips the input once shutdown is certain. Restarts, sign-outs and installers closing the app are recognised and skipped.
 - **Optional switch before sleep.**
-- **USB switching (this fork)** – choose a USB device and independently switch on connection or disconnection. Windows and macOS; disabled by default. [Setup guide](docs/usb-switching.md).
+- **USB switching (this fork)** – choose one USB device, such as your keyboard, and switch to this computer only when it connects. Removal and other devices do not trigger. Windows and macOS; disabled by default. [Setup guide](docs/usb-switching.md).
 - **Tray menu** – switch inputs, toggle the shutdown switch and start-up, open settings and the log.
 - **Knows your monitor** – reads the current input and the inputs the monitor reports, so you don't have to guess codes.
 - **Small and native** – one ~600 KB executable, no runtime, no admin rights, no external tools. It calls the Windows Monitor Configuration API (`dxva2.dll`) directly.
@@ -117,8 +117,7 @@ Settings live in `%APPDATA%\DdcSwitch\config.ini`. The settings window writes it
 | `notify_success` | `false` | Show a notification after every switch, not only on failure |
 | `usb_enabled` | `false` | Enable USB-triggered switching |
 | `usb_device` | | USB vendor:product ID in hexadecimal, e.g. `1234:5678` |
-| `usb_connect_input` | | Input on connection; blank disables this action |
-| `usb_disconnect_input` | | Input on disconnection; blank disables this action |
+| `usb_connect_input` | | This computer's input on the selected device's connection; required when enabled |
 
 The log is `%APPDATA%\DdcSwitch\DdcSwitch.log`.
 

@@ -72,7 +72,6 @@ final class SettingsModel: ObservableObject {
     @Published var usbEnabled = false { didSet { commit() } }
     @Published var usbDeviceText = "" { didSet { commit() } }
     @Published var usbConnectText = "" { didSet { commit() } }
-    @Published var usbDisconnectText = "" { didSet { commit() } }
     @Published private(set) var usbDevices: [String] = []
     @Published private(set) var usbListIssue: String?
     @Published private(set) var usbIssue: String?
@@ -109,7 +108,6 @@ final class SettingsModel: ObservableObject {
         usbEnabled = cfg.usb.enabled
         usbDeviceText = cfg.usb.device
         usbConnectText = cfg.usb.connectInput.map(String.init) ?? ""
-        usbDisconnectText = cfg.usb.disconnectInput.map(String.init) ?? ""
         refreshUSB()
         notifySuccess = cfg.notifySuccess
         appearance = cfg.appearance
@@ -215,7 +213,7 @@ final class SettingsModel: ObservableObject {
         cfg.language = language
         cfg.appearance = appearance
         cfg.usb = USBConfig(enabled: usbEnabled, device: usbDeviceID(usbDeviceText) ?? "",
-                            connectInput: parseInput(usbConnectText), disconnectInput: parseInput(usbDisconnectText))
+                            connectInput: parseInput(usbConnectText))
         validateUSB()
         // Do not keep an old action armed while the user is editing an invalid value.
         if usbIssue != nil { cfg.usb.enabled = false }
@@ -266,13 +264,11 @@ final class SettingsModel: ObservableObject {
     private func validateUSB() {
         usbIssue = nil
         guard usbEnabled else { return }
-        for text in [usbConnectText, usbDisconnectText] {
-            if !text.trimmingCharacters(in: .whitespaces).isEmpty && parseInput(text) == nil {
-                usbIssue = USBStrings.current.invalid
-                return
-            }
+        if !usbConnectText.trimmingCharacters(in: .whitespaces).isEmpty && parseInput(usbConnectText) == nil {
+            usbIssue = USBStrings.current.invalid
+            return
         }
-        if usbDeviceID(usbDeviceText) == nil || (parseInput(usbConnectText) == nil && parseInput(usbDisconnectText) == nil) {
+        if usbDeviceID(usbDeviceText) == nil || parseInput(usbConnectText) == nil {
             usbIssue = USBStrings.current.choose
         }
     }
