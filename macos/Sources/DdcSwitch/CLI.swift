@@ -53,7 +53,7 @@ enum CLI {
                 print("\(names.count) DDC/CI monitor(s) detected:")
                 for (n, name) in names.enumerated() { print("  \(n + 1): \(name)") }
             case ("get", _):
-                print("Current input: \(inputLabel(try DDC.getInput(index: monitor, name: monitorName)))")
+                print("Current input: \(cfg.inputTitle(try DDC.getInput(index: monitor, name: monitorName)))")
             case ("set", let v?):
                 guard let input = parseInput(v) else { throw DDCError(description: "Invalid input source: \(v)") }
                 let m = try DDC.setVCP(index: monitor, name: monitorName, code: vcpInput, value: input)

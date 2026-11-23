@@ -27,7 +27,7 @@ struct Config: Equatable {
         HotkeyBinding(enabled: false, name: "MacBook (USB-C)", input: 25, mods: [.control, .option, .command], key: KeyCode.right),
         HotkeyBinding(enabled: false, name: "", input: 15, mods: [], key: nil),
     ]
-    var shutdownSwitch = true
+    var shutdownSwitch = false
     var shutdownInput: UInt32 = 17
     var skipOnRestart = true
     var sleepSwitch = false
@@ -37,6 +37,9 @@ struct Config: Equatable {
     /// "auto" (follow the system), "light" or "dark". macOS only; Windows ignores the key.
     var appearance = "auto"
     var usb = USBConfig()
+
+    var shutdownSwitchAllowed: Bool { shutdownSwitch && !usb.enabled }
+    var sleepSwitchAllowed: Bool { sleepSwitch && !usb.enabled }
 
     /// Loads the config file; `existed` is false when no file existed yet.
     static func load(from url: URL = Paths.configFile) -> (config: Config, existed: Bool) {
@@ -72,9 +75,21 @@ struct Config: Equatable {
         case "language": language = value
         case "usb_enabled": usb.enabled = flag
         case "usb_device": usb.device = usbDeviceID(value) ?? ""
-        case "usb_connect_input": usb.connectInput = parseInput(value)
+        case "usb_device_name": usb.deviceName = value
         case "appearance": appearance = ["light", "dark"].contains(value.lowercased()) ? value.lowercased() : "auto"
         default:
+            if key.hasPrefix("usb_target") {
+                let parts = key.dropFirst("usb_target".count).split(separator: "_", maxSplits: 1)
+                guard parts.count == 2, let number = Int(parts[0]), (1...usbTargetSlots).contains(number) else { return }
+                switch parts[1] {
+                case "enabled": usb.targets[number - 1].enabled = flag
+                case "monitor": usb.targets[number - 1].monitor = max(Int(value) ?? 0, 0)
+                case "name": usb.targets[number - 1].name = value
+                case "input": usb.targets[number - 1].input = parseInput(value)
+                default: break
+                }
+                return
+            }
             // hotkeyN, hotkeyN_enabled, hotkeyN_name, hotkeyN_input
             guard key.hasPrefix("hotkey") else { return }
             let rest = key.dropFirst("hotkey".count)
@@ -112,7 +127,13 @@ struct Config: Equatable {
         s += "sleep_switch = \(sleepSwitch)\n"
         s += "notify_success = \(notifySuccess)\n"
         s += "usb_enabled = \(usb.enabled)\nusb_device = \(usb.device)\n"
-        s += "usb_connect_input = \(usb.connectInput.map(String.init) ?? "")\n"
+        func singleLine(_ text: String) -> String { text.replacingOccurrences(of: "\r", with: " ").replacingOccurrences(of: "\n", with: " ") }
+        s += "usb_device_name = \(singleLine(usb.deviceName))\n"
+        for (index, target) in usb.targets.enumerated() {
+            let number = index + 1
+            s += "usb_target\(number)_enabled = \(target.enabled)\nusb_target\(number)_monitor = \(target.monitor)\n"
+            s += "usb_target\(number)_name = \(singleLine(target.name))\nusb_target\(number)_input = \(target.input.map(String.init) ?? "")\n"
+        }
         return s
     }
 

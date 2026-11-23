@@ -71,6 +71,18 @@ final class ConfigTests: XCTestCase {
 }
 
 final class DDCTests: XCTestCase {
+    func testG7CReplyAndNullFrame() {
+        let valid: [UInt8] = [0x6E, 0x88, 0x02, 0x00, 0x60, 0x00, 0x00, 0x0E, 0x00, 0x08, 0xD2]
+        XCTAssertEqual(DDC.parseVCPReply(valid, code: 0x60)?.current, 8)
+        XCTAssertEqual(DDC.parseVCPReply(valid, code: 0x60)?.maximum, 14)
+        XCTAssertNil(DDC.parseVCPReply(valid, code: 0x10))
+        XCTAssertNil(DDC.parseVCPReply(Array(valid.dropLast()), code: 0x60))
+        var corrupt = valid
+        corrupt[10] ^= 1
+        XCTAssertNil(DDC.parseVCPReply(corrupt, code: 0x60))
+        XCTAssertNil(DDC.parseVCPReply([0x6E, 0x80, 0xBE, 0x6E, 0xA3, 0x4E, 0xF9, 0xAB, 0x2F, 0x9A, 0x2D], code: 0x60))
+    }
+
     func testCapsInputs() {
         let caps = "(prot(monitor)type(lcd)model(U2725QE)cmds(01 02)vcp(02 04 14(01 04 05) 16 60( 19 0F 11) 66(00F2) E2(00 02))mccs_ver(2.1))"
         XCTAssertEqual(DDC.parseInputCaps(caps), [0x19, 0x0F, 0x11])

@@ -41,9 +41,7 @@ impl Monitors {
                 return Ok(m);
             }
         }
-        self.0
-            .get(index.max(1) - 1)
-            .ok_or_else(|| fmt(t().err_monitor_not_found, &[&index, &self.0.len()]))
+        self.0.get(index.max(1) - 1).ok_or_else(|| fmt(t().err_monitor_not_found, &[&index, &self.0.len()]))
     }
 }
 
@@ -158,18 +156,39 @@ pub fn list_names() -> Vec<String> {
 pub fn set_vcp(index: usize, name: &str, code: u8, value: u32) -> Result<String, String> {
     let _g = DDC_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let mons = enumerate();
-    let m = mons.resolve(index, name)?;
+    let monitor = mons.resolve(index, name)?;
+    write_vcp(monitor, code, value, &|| true)?;
+    Ok(monitor.name.clone())
+}
+
+pub fn switch_usb(targets: &[crate::usb::UsbTarget], permitted: impl Fn() -> bool) -> Vec<Result<String, String>> {
+    let _guard = DDC_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    if !permitted() {
+        return Vec::new();
+    }
+    // Keep all handles alive before switching the first screen changes the topology.
+    let monitors = enumerate();
+    let names: Vec<String> = monitors.0.iter().map(|monitor| monitor.name.clone()).collect();
+    crate::usb::execute_targets(targets, &names, &permitted, |index, input| {
+        write_vcp(&monitors.0[index], crate::config::VCP_INPUT, input, &permitted)
+    })
+}
+
+fn write_vcp(monitor: &Monitor, code: u8, value: u32, permitted: &impl Fn() -> bool) -> Result<(), String> {
     let mut last = 0;
     for attempt in 0..4 {
         if attempt > 0 {
             thread::sleep(Duration::from_millis(80));
         }
-        if unsafe { SetVCPFeature(m.handle, code, value) } != 0 {
-            return Ok(m.name.clone());
+        if !permitted() {
+            return Err("USB switch cancelled".into());
+        }
+        if unsafe { SetVCPFeature(monitor.handle, code, value) } != 0 {
+            return Ok(());
         }
         last = unsafe { GetLastError().0 };
     }
-    Err(fmt(t().err_set_failed, &[&m.name, &format!("{last:08X}")]))
+    Err(fmt(t().err_set_failed, &[&monitor.name, &format!("{last:08X}")]))
 }
 
 /// Reads a VCP feature, returning (current, maximum).
@@ -224,7 +243,9 @@ pub fn capabilities(index: usize, name: &str) -> Result<String, String> {
 /// Values listed for VCP 0x60 in an MCCS capabilities string, e.g. `vcp(... 60( 19 0F 11) ...)`.
 pub fn parse_input_caps(caps: &str) -> Vec<u32> {
     let lower = caps.to_ascii_lowercase();
-    let Some(start) = lower.find("vcp(") else { return Vec::new() };
+    let Some(start) = lower.find("vcp(") else {
+        return Vec::new();
+    };
     let s = lower[start + 4..].as_bytes();
     let mut i = 0;
     let skip_ws = |i: &mut usize| {

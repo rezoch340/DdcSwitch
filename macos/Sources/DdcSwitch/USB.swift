@@ -1,13 +1,73 @@
 import Foundation
 import IOKit
 
+let usbTargetSlots = 2
+
+struct USBTarget: Equatable {
+    var enabled = false
+    var monitor = 0
+    var name = ""
+    var input: UInt32?
+
+    var valid: Bool { monitor > 0 && !name.trimmingCharacters(in: .whitespaces).isEmpty && input.map { (1...65535).contains($0) } == true }
+}
+
 struct USBConfig: Equatable {
     var enabled = false
     var device = ""
-    var connectInput: UInt32?
+    var deviceName = ""
+    var targets = [USBTarget](repeating: USBTarget(), count: usbTargetSlots)
 
-    var active: Bool { enabled && usbDeviceID(device) != nil && connectInput != nil }
-    func input(connected: Bool) -> UInt32? { connected ? connectInput : nil }
+    var active: Bool { enabled && usbDeviceID(device) != nil && targets.contains { $0.enabled && $0.valid } }
+    var deviceLabel: String { deviceName.isEmpty ? device : "\(device) — \(deviceName)" }
+    func triggered(connected: Bool) -> Bool { active && !connected }
+}
+
+/// Invalidates queued work across sleep, shutdown and settings changes, even after resuming.
+final class USBRunGate {
+    private let lock = NSLock()
+    private var epoch: UInt64 = 1
+
+    func pause() { lock.lock(); defer { lock.unlock() }; epoch = (epoch &+ 2) | 1 }
+    func resume() { lock.lock(); defer { lock.unlock() }; epoch = (epoch &+ 2) & ~1 }
+    func ticket() -> () -> Bool {
+        lock.lock()
+        let version = epoch
+        lock.unlock()
+        return { [self] in
+            lock.lock(); defer { lock.unlock() }
+            return version & 1 == 0 && epoch == version
+        }
+    }
+}
+
+/// All targets use one snapshot; a missing screen never falls back to a different monitor.
+func executeUSBTargets(_ targets: [USBTarget], names: [String], permitted: () -> Bool,
+                       write: (Int, UInt32) throws -> Void) -> [Result<String, DDCError>] {
+    var results: [Result<String, DDCError>] = []
+    var used: Set<Int> = []
+    for target in targets where target.enabled {
+        guard permitted() else { break }
+        let matches = names.indices.filter { names[$0] == target.name }
+        let selected = matches.count == 1 ? matches.first : matches.first { $0 == target.monitor - 1 }
+        guard target.valid, let selected, let input = target.input else {
+            results.append(.failure(DDCError(description: "USB target unavailable or invalid: \(target.name)")))
+            continue
+        }
+        guard used.insert(selected).inserted else {
+            results.append(.failure(DDCError(description: "Duplicate USB target: \(target.name)")))
+            continue
+        }
+        do {
+            try write(selected, input)
+            guard permitted() else { break }
+            results.append(.success("\(target.name) → \(input)"))
+        } catch {
+            guard permitted() else { break }
+            results.append(.failure(DDCError(description: "\(target.name): \(error)")))
+        }
+    }
+    return results
 }
 
 /// The picker may append a display name. Persist only the hexadecimal VID:PID.
@@ -67,7 +127,8 @@ private struct USBError: Error, CustomStringConvertible {
 
 /// Main-thread IOKit notifications, with a 350 ms quiet period for composite/hub bursts.
 final class USBMonitor {
-    var onInput: ((UInt32) -> Void)?
+    let gate = USBRunGate()
+    var onRemoval: (([USBTarget], @escaping () -> Bool) -> Void)?
     var onError: ((String) -> Void)?
     private var config = USBConfig()
     private var presence = USBPresence()
@@ -106,12 +167,14 @@ final class USBMonitor {
         // Draining arms the notifications; initial devices are not connection events.
         Self.drain(arrivals)
         Self.drain(removals)
+        if !suspended { gate.resume() }
         // Saving while wake is settling must keep the scheduled rebaseline alive.
         if resumeAfter != nil { changed() }
         else if !suspended { _ = sample() }
     }
 
     func stop() {
+        gate.pause()
         pending?.cancel()
         pending = nil
         if let port {
@@ -125,6 +188,7 @@ final class USBMonitor {
     }
 
     func suspend() {
+        gate.pause()
         suspended = true
         resumeAfter = nil
         pending?.cancel()
@@ -132,6 +196,7 @@ final class USBMonitor {
     }
 
     func resume() {
+        gate.resume()
         suspended = false
         resumeAfter = Date(timeIntervalSinceNow: 2)
         presence.reset()
@@ -153,8 +218,11 @@ final class USBMonitor {
                 self.presence.reset()
             }
             guard let connected = self.sample() else { return }
+            if connected { self.gate.resume() } // Returning the device cancels a queued departure.
             AppLog.log("USB \(self.config.device) \(connected ? "connected" : "disconnected")")
-            if let input = self.config.input(connected: connected) { self.onInput?(input) }
+            if self.config.triggered(connected: connected) {
+                self.onRemoval?(self.config.targets, self.gate.ticket())
+            }
         }
         pending = work
         DispatchQueue.main.asyncAfter(deadline: .now() + max(0.35, resumeAfter?.timeIntervalSinceNow ?? 0), execute: work)

@@ -307,16 +307,20 @@ struct PowerPane: View {
                 }
                 if let issue = model.shutdownIssue { Issue(text: issue) }
             }
+            .disabled(model.usbEnabled)
             Section {
-                Toggle(t.beforeShutdown, isOn: $model.shutdownSwitch)
+                Toggle(t.beforeShutdown, isOn: Binding(get: { model.shutdownSwitch && !model.usbEnabled }, set: { model.shutdownSwitch = $0 }))
+                    .disabled(model.usbEnabled)
                 Toggle(t.skipOnRestart, isOn: $model.skipOnRestart)
-                    .disabled(!model.shutdownSwitch)
+                    .disabled(model.usbEnabled || !model.shutdownSwitch)
                     .padding(.leading, 16)
-                Toggle(t.beforeSleep, isOn: $model.sleepSwitch)
+                Toggle(t.beforeSleep, isOn: Binding(get: { model.sleepSwitch && !model.usbEnabled }, set: { model.sleepSwitch = $0 }))
+                    .disabled(model.usbEnabled)
             } footer: {
-                Footnote(text: t.powerFooter)
+                Footnote(text: model.usbEnabled ? USBStrings.current.protection : t.powerFooter)
             }
-            if !model.launchAtLogin && (model.shutdownSwitch || model.sleepSwitch) {
+            .disabled(model.usbEnabled)
+            if !model.usbEnabled && !model.launchAtLogin && (model.shutdownSwitch || model.sleepSwitch) {
                 Section {
                     LabeledContent {
                         Button(t.turnOnLaunchAtLogin) { model.launchAtLogin = true }
@@ -343,20 +347,36 @@ struct USBPane: View {
             Section {
                 LabeledContent(copy.device) {
                     InputComboBox(text: $model.usbDeviceText, items: model.usbDevices)
-                        .frame(width: 300)
+                        .frame(width: 330)
                         .accessibilityLabel(copy.device)
                 }
-                Button(copy.refresh) { model.refreshUSB() }
+                Button(copy.refresh) { model.refreshUSB(); model.redetect() }
                 if let issue = model.usbListIssue { Issue(text: issue) }
-                LabeledContent(copy.connect) {
-                    InputComboBox(text: $model.usbConnectText, items: [""] + model.inputChoices)
-                        .frame(width: 180)
-                        .accessibilityLabel(copy.connect)
-                }
-            } footer: { Footnote(text: copy.hint) }
+            }
             .disabled(!model.usbEnabled)
+            ForEach(model.usbTargets.indices, id: \.self) { slot in
+                Section {
+                    Toggle("\(copy.monitor) \(slot + 1)", isOn: $model.usbTargets[slot].enabled)
+                    Picker(model.strings.paneMonitor, selection: Binding(
+                        get: { model.usbMonitorSelection(slot) },
+                        set: { model.selectUSBMonitor(slot, index: $0) })) {
+                        Text(model.usbTargets[slot].name.isEmpty ? copy.selectMonitor : "\(model.usbTargets[slot].name) (\(copy.offline))").tag(-1)
+                        ForEach(model.monitorNames.indices, id: \.self) { index in
+                            Text("\(index + 1). \(model.monitorNames[index])").tag(index)
+                        }
+                    }
+                    .disabled(!model.usbTargets[slot].enabled)
+                    LabeledContent(copy.disconnect) {
+                        InputComboBox(text: $model.usbTargets[slot].inputText, items: standardInputs.map(inputLabel))
+                            .frame(width: 180)
+                            .accessibilityLabel(copy.disconnect)
+                    }
+                    .disabled(!model.usbTargets[slot].enabled)
+                }
+                .disabled(!model.usbEnabled)
+            }
             if let issue = model.usbIssue { Section { Issue(text: issue) } }
-            Section { Footnote(text: copy.footer) }
+            Section { Footnote(text: copy.hint + "\n" + copy.protection + "\n" + copy.footer) }
             if let error = model.saveError { Section { Issue(text: error) } }
         }
     }
@@ -373,6 +393,8 @@ struct InputComboBox: NSViewRepresentable {
         box.usesDataSource = false
         box.completes = false
         box.numberOfVisibleItems = 10
+        box.addItems(withObjectValues: items)
+        box.stringValue = text
         box.delegate = context.coordinator
         box.controlSize = .regular
         return box
@@ -380,6 +402,8 @@ struct InputComboBox: NSViewRepresentable {
 
     func updateNSView(_ box: NSComboBox, context: Context) {
         context.coordinator.parent = self
+        context.coordinator.updating = true
+        defer { context.coordinator.updating = false }
         if box.objectValues as? [String] != items {
             box.removeAllItems()
             box.addItems(withObjectValues: items)
@@ -392,15 +416,16 @@ struct InputComboBox: NSViewRepresentable {
 
     final class Coordinator: NSObject, NSComboBoxDelegate {
         var parent: InputComboBox
+        var updating = false
         init(_ parent: InputComboBox) { self.parent = parent }
 
         func controlTextDidChange(_ note: Notification) {
-            guard let box = note.object as? NSComboBox else { return }
+            guard !updating, let box = note.object as? NSComboBox else { return }
             parent.text = box.stringValue
         }
 
         func comboBoxSelectionDidChange(_ note: Notification) {
-            guard let box = note.object as? NSComboBox, box.indexOfSelectedItem >= 0,
+            guard !updating, let box = note.object as? NSComboBox, box.indexOfSelectedItem >= 0,
                   let value = box.itemObjectValue(at: box.indexOfSelectedItem) as? String else { return }
             parent.text = value
         }

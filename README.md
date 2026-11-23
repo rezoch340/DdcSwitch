@@ -45,9 +45,9 @@ One monitor, two computers – say a Windows PC on HDMI and a MacBook on USB‑C
 ## Features
 
 - **Hotkeys** – up to three global shortcuts, each switching to its own input (for example `Ctrl+Alt+Win+→` for the Mac).
-- **Switch before shutdown** – flips the input once shutdown is certain. Restarts, sign-outs and installers closing the app are recognised and skipped.
+- **Optional switch before shutdown** – disabled by default in this fork and suppressed whenever USB mode is enabled.
 - **Optional switch before sleep.**
-- **USB switching (this fork)** – choose one USB device, such as your keyboard, and switch to this computer only when it connects. Removal and other devices do not trigger. Windows and macOS; disabled by default. [Setup guide](docs/usb-switching.md).
+- **USB switching (this fork)** – choose a named USB device, such as your keyboard. When it disconnects, this computer sends up to two displays to individually configured inputs on the other computer. Arrival does not trigger. Shutdown, restart, logout and sleep cancel pending USB commands. Windows and macOS; disabled by default. [Setup guide](docs/usb-switching.md).
 - **Tray menu** – switch inputs, toggle the shutdown switch and start-up, open settings and the log.
 - **Knows your monitor** – reads the current input and the inputs the monitor reports, so you don't have to guess codes.
 - **Small and native** – one ~600 KB executable, no runtime, no admin rights, no external tools. It calls the Windows Monitor Configuration API (`dxva2.dll`) directly.
@@ -60,6 +60,8 @@ One monitor, two computers – say a Windows PC on HDMI and a MacBook on USB‑C
 - A monitor with **DDC/CI enabled** in its on-screen menu. Most external monitors support it over HDMI, DisplayPort and USB‑C. Laptop panels don't, and some docks, adapters and KVM switches don't pass DDC/CI through.
 
 ## Installation
+
+The USB feature is on this fork's `feat/usb-trigger` branch; the upstream releases linked below do not contain it. See the [USB guide](docs/usb-switching.md) for setup and build instructions.
 
 Download `DdcSwitch-<version>-windows-x64.zip` from the [latest release](https://github.com/pokoblin/DdcSwitch/releases/latest), extract it to a permanent folder (for example `%LOCALAPPDATA%\Programs\DdcSwitch`) and run `DdcSwitch.exe`. The exe isn't code-signed, so SmartScreen may warn you the first time: choose *More info* → *Run anyway*.
 
@@ -91,6 +93,8 @@ If the Windows SDK (`rc.exe`) is installed, the icon and version information are
 
 ## How the shutdown switch works
 
+The following describes the optional legacy feature with USB mode **off**. When USB mode is on, power actions are blocked even if an older config enabled them. The app instead registers for early shutdown notification, cancels pending USB commands and stops listening; a cancelled Windows shutdown establishes a fresh baseline.
+
 1. DdcSwitch keeps a hidden top-level window and registers as one of the *last* applications to be notified of a shutdown (`SetProcessShutdownParameters`).
 2. It only acts on `WM_ENDSESSION(TRUE)` – when the shutdown is definite. If another app blocks the shutdown, the *"These apps are preventing shutdown"* screen stays on Windows' input where you can see it, and a cancelled shutdown changes nothing.
 3. **Restart or power off?** Windows doesn't say. Every user-initiated shutdown (Start menu, `shutdown.exe`, Windows Update) writes event 1074 to the System log *before* applications are notified, and its data says `power off` or `restart`. DdcSwitch reads that event. If the type can't be determined, it switches anyway.
@@ -110,14 +114,18 @@ Settings live in `%APPDATA%\DdcSwitch\config.ini`. The settings window writes it
 | `hotkeyN_enabled` | | `true` / `false` |
 | `hotkeyN_name` | | Label shown in the menu |
 | `hotkeyN_input` | | Input code (`25`, `0x19`, or an alias such as `hdmi1`, `dp1`, `usbc`) |
-| `shutdown_switch` | `true` | Switch before shutdown |
+| `shutdown_switch` | `false` | Optional switch before shutdown; ignored while USB mode is enabled |
 | `shutdown_input` | `25` | Input to switch to before shutdown or sleep |
 | `skip_on_restart` | `true` | Don't switch when Windows restarts |
-| `sleep_switch` | `false` | Also switch before sleep |
+| `sleep_switch` | `false` | Optional switch before sleep; ignored while USB mode is enabled |
 | `notify_success` | `false` | Show a notification after every switch, not only on failure |
 | `usb_enabled` | `false` | Enable USB-triggered switching |
 | `usb_device` | | USB vendor:product ID in hexadecimal, e.g. `1234:5678` |
-| `usb_connect_input` | | This computer's input on the selected device's connection; required when enabled |
+| `usb_device_name` | | Saved product name, shown even when the device is unplugged |
+| `usb_targetN_enabled` | `false` | Enable display row N (1–2) |
+| `usb_targetN_monitor` | `0` | 1-based monitor index; used to disambiguate matching names |
+| `usb_targetN_name` | | Required monitor name; a missing monitor never falls back to another screen |
+| `usb_targetN_input` | | Other computer's input, sent when the selected USB device disconnects |
 
 The log is `%APPDATA%\DdcSwitch\DdcSwitch.log`.
 

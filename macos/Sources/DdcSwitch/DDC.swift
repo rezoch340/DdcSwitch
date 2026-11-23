@@ -34,10 +34,19 @@ final class Monitor {
     }
 
     /// Sends a DDC/CI message (`payload` starts with the opcode) and, if `replyLength` > 0, reads the answer.
-    func transact(_ payload: [UInt8], replyLength: Int, delay: useconds_t = 50_000) -> (IOReturn, [UInt8]) {
+    func transact(_ payload: [UInt8], replyLength: Int, delay: useconds_t = 50_000,
+                  permitted: () -> Bool = { true }) -> (IOReturn, [UInt8]) {
         var packet = [0x80 | UInt8(payload.count)] + payload
         packet.append(packet.reduce(0x6E ^ hostAddress, ^))
-        var status = IOAVServiceWriteI2C(service, UInt32(displayAddress), UInt32(hostAddress), &packet, UInt32(packet.count))
+        // Some displays (including G7C II) acknowledge the first request but only
+        // act/reply after a second identical request, as used by m1ddc.
+        var status: IOReturn = KERN_SUCCESS
+        for _ in 0..<2 {
+            usleep(10_000)
+            guard permitted() else { return (kIOReturnAborted, []) }
+            status = IOAVServiceWriteI2C(service, UInt32(displayAddress), UInt32(hostAddress), &packet, UInt32(packet.count))
+            if status != KERN_SUCCESS { return (status, []) }
+        }
         guard status == KERN_SUCCESS, replyLength > 0 else { return (status, []) }
         usleep(delay)
         var reply = [UInt8](repeating: 0, count: replyLength)
@@ -112,6 +121,13 @@ enum DDC {
         return reply[..<(length - 1)].reduce(0x50, ^) == reply[length - 1]
     }
 
+    static func parseVCPReply(_ reply: [UInt8], code: UInt8) -> (current: UInt32, maximum: UInt32)? {
+        guard reply.count >= 11, reply[0] == 0x6E, reply[1] == 0x88,
+              reply[2] == 0x02, reply[3] == 0, reply[4] == code,
+              checksumOK(reply, length: 11) else { return nil }
+        return ((UInt32(reply[8]) << 8) | UInt32(reply[9]), (UInt32(reply[6]) << 8) | UInt32(reply[7]))
+    }
+
     static func listNames() -> [String] {
         locked { enumerate().map(\.name) }
     }
@@ -120,16 +136,33 @@ enum DDC {
     @discardableResult
     static func setVCP(index: Int, name: String, code: UInt8, value: UInt32) throws -> String {
         try locked {
-            let m = try resolve(enumerate(), index, name)
-            var last: IOReturn = 0
-            for attempt in 0..<4 {
-                if attempt > 0 { usleep(80_000) }
-                let (status, _) = m.transact([0x03, code, UInt8((value >> 8) & 0xFF), UInt8(value & 0xFF)], replyLength: 0)
-                if status == KERN_SUCCESS { return m.name }
-                last = status
-            }
-            throw DDCError(description: I18n.fmt(I18n.t.errSetFailed, m.name, hex(last)))
+            let monitor = try resolve(enumerate(), index, name)
+            try writeVCP(monitor, code: code, value: value, permitted: { true })
+            return monitor.name
         }
+    }
+
+    static func switchUSB(_ targets: [USBTarget], permitted: () -> Bool) -> [Result<String, DDCError>] {
+        locked {
+            guard permitted() else { return [] }
+            // Retain every service before the first write changes the display topology.
+            let monitors = enumerate()
+            return executeUSBTargets(targets, names: monitors.map(\.name), permitted: permitted) { index, input in
+                try writeVCP(monitors[index], code: vcpInput, value: input, permitted: permitted)
+            }
+        }
+    }
+
+    private static func writeVCP(_ monitor: Monitor, code: UInt8, value: UInt32, permitted: () -> Bool) throws {
+        var last: IOReturn = 0
+        for attempt in 0..<4 {
+            if attempt > 0 { usleep(80_000) }
+            guard permitted() else { throw DDCError(description: "USB switch cancelled") }
+            let (status, _) = monitor.transact([0x03, code, UInt8((value >> 8) & 0xFF), UInt8(value & 0xFF)], replyLength: 0, permitted: permitted)
+            if status == KERN_SUCCESS { return }
+            last = status
+        }
+        throw DDCError(description: I18n.fmt(I18n.t.errSetFailed, monitor.name, hex(last)))
     }
 
     /// Reads a VCP feature, returning (current, maximum).
@@ -140,14 +173,22 @@ enum DDC {
             // Monitors often reject requests that arrive right after another one; back off.
             for delay: useconds_t in [0, 100_000, 300_000, 600_000] {
                 usleep(delay)
-                let (status, r) = m.transact([0x01, code], replyLength: 11)
+                let (status, reply) = m.transact([0x01, code], replyLength: 11)
                 guard status == KERN_SUCCESS else { last = status; continue }
-                // 6E 88 02 <result> <code> <type> <max hi> <max lo> <cur hi> <cur lo> <checksum>
-                guard r[2] == 0x02, r[3] == 0, r[4] == code, checksumOK(r, length: 11) else {
+                guard let value = parseVCPReply(reply, code: code) else {
                     last = kIOReturnBadArgument
                     continue
                 }
-                return ((UInt32(r[8]) << 8) | UInt32(r[9]), (UInt32(r[6]) << 8) | UInt32(r[7]))
+                return value
+            }
+            if last == kIOReturnBadArgument {
+                let message: String
+                switch I18n.currentCode {
+                case "zh-Hans": message = "未收到有效的 DDC/CI 回复"
+                case "zh-Hant": message = "未收到有效的 DDC/CI 回覆"
+                default: message = "No valid DDC/CI reply received"
+                }
+                throw DDCError(description: "\(m.name): \(message)")
             }
             throw DDCError(description: I18n.fmt(I18n.t.errReadFailed, m.name, hex(last)))
         }

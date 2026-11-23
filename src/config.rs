@@ -65,7 +65,7 @@ impl Default for Config {
                 },
                 Binding { enabled: false, name: String::new(), input: 15, mods: 0, vk: 0 },
             ],
-            shutdown_switch: true,
+            shutdown_switch: false,
             shutdown_input: 25,
             skip_on_restart: true,
             sleep_switch: false,
@@ -107,7 +107,9 @@ impl Config {
             if line.is_empty() || line.starts_with('#') || line.starts_with(';') {
                 continue;
             }
-            let Some((k, v)) = line.split_once('=') else { continue };
+            let Some((k, v)) = line.split_once('=') else {
+                continue;
+            };
             cfg.apply(k.trim(), v.trim());
         }
         (cfg, true)
@@ -126,13 +128,35 @@ impl Config {
             "language" => self.language = val.to_string(),
             "usb_enabled" => self.usb.enabled = flag(),
             "usb_device" => self.usb.device = usb::device_id(val).unwrap_or_default(),
-            "usb_connect_input" => self.usb.connect_input = parse_input(val),
+            "usb_device_name" => self.usb.device_name = val.to_string(),
+            key if key.starts_with("usb_target") => {
+                let Some((number, field)) = key.trim_start_matches("usb_target").split_once('_') else {
+                    return;
+                };
+                let Some(index) = number.parse::<usize>().ok().and_then(|number| number.checked_sub(1)) else {
+                    return;
+                };
+                let Some(target) = self.usb.targets.get_mut(index) else {
+                    return;
+                };
+                match field {
+                    "enabled" => target.enabled = flag(),
+                    "monitor" => target.monitor = val.parse().unwrap_or(0),
+                    "name" => target.name = val.to_string(),
+                    "input" => target.input = parse_input(val),
+                    _ => {}
+                }
+            }
             _ => {
                 // hotkeyN, hotkeyN_enabled, hotkeyN_name, hotkeyN_input
-                let Some(rest) = key.strip_prefix("hotkey") else { return };
+                let Some(rest) = key.strip_prefix("hotkey") else {
+                    return;
+                };
                 let (num, field) = rest.split_once('_').unwrap_or((rest, ""));
                 let Ok(n) = num.parse::<usize>() else { return };
-                let Some(b) = n.checked_sub(1).and_then(|i| self.bindings.get_mut(i)) else { return };
+                let Some(b) = n.checked_sub(1).and_then(|i| self.bindings.get_mut(i)) else {
+                    return;
+                };
                 match field {
                     "" => {
                         let (mods, vk) = parse_hotkey(val).unwrap_or((0, 0));
@@ -172,11 +196,27 @@ impl Config {
         s += &format!("sleep_switch = {}\r\n", self.sleep_switch);
         s += &format!("notify_success = {}\r\n", self.notify_success);
         s += &format!("usb_enabled = {}\r\nusb_device = {}\r\n", self.usb.enabled, self.usb.device);
-        s += &format!(
-            "usb_connect_input = {}\r\n",
-            self.usb.connect_input.map(|input| input.to_string()).unwrap_or_default()
-        );
+        s += &format!("usb_device_name = {}\r\n", self.usb.device_name.replace(['\r', '\n'], " "));
+        for (index, target) in self.usb.targets.iter().enumerate() {
+            let number = index + 1;
+            s += &format!(
+                "usb_target{number}_enabled = {}\r\nusb_target{number}_monitor = {}\r\n",
+                target.enabled, target.monitor
+            );
+            s += &format!("usb_target{number}_name = {}\r\n", target.name.replace(['\r', '\n'], " "));
+            s += &format!(
+                "usb_target{number}_input = {}\r\n",
+                target.input.map(|input| input.to_string()).unwrap_or_default()
+            );
+        }
         s
+    }
+
+    pub fn shutdown_switch_allowed(&self) -> bool {
+        self.shutdown_switch && !self.usb.enabled
+    }
+    pub fn sleep_switch_allowed(&self) -> bool {
+        self.sleep_switch && !self.usb.enabled
     }
 
     /// "MacBook (USB-C) [25]" style title for an input value, using a binding name if one targets it.
@@ -376,8 +416,16 @@ mod tests {
         config.apply("usb_enabled", "true");
         config.apply("usb_device", "0b05:1234");
         config.apply("usb_disconnect_input", "7");
-        assert!(!config.usb.active()); // Legacy removal actions must not become local inputs.
+        assert!(!config.usb.active());
         config.apply("usb_connect_input", "0x08");
+        assert!(!config.usb.active()); // An old local input is not an outgoing destination.
+        config.apply("usb_device_name", "Keyboard");
+        for (number, name, input) in [(1, "G7C II", "7"), (2, "ASUS", "17")] {
+            config.apply(&format!("usb_target{number}_enabled"), "true");
+            config.apply(&format!("usb_target{number}_monitor"), &number.to_string());
+            config.apply(&format!("usb_target{number}_name"), name);
+            config.apply(&format!("usb_target{number}_input"), input);
+        }
         let mut parsed = Config::default();
         for line in config.serialized().lines() {
             if let Some((key, value)) = line.split_once('=') {
@@ -385,15 +433,30 @@ mod tests {
             }
         }
         assert_eq!(parsed.usb, config.usb);
-        assert_eq!(parsed.usb.input(false), None);
-        assert!(!parsed.serialized().contains("usb_disconnect_input"));
-        assert_eq!(parsed.usb.connect_input, Some(8));
+        assert!(parsed.usb.triggered(false));
+        assert!(!parsed.usb.triggered(true));
+        assert!(!parsed.serialized().contains("usb_connect_input"));
+        assert_eq!(parsed.usb.targets[0].input, Some(7));
         for invalid in ["", "0", "65536", "invalid"] {
-            parsed.apply("usb_connect_input", invalid);
-            assert_eq!(parsed.usb.connect_input, None);
+            parsed.apply("usb_target1_input", invalid);
+            assert_eq!(parsed.usb.targets[0].input, None);
         }
         parsed.apply("usb_device", "invalid");
         assert!(!parsed.usb.active());
+    }
+
+    #[test]
+    fn usb_mode_blocks_legacy_power_actions_even_if_incomplete() {
+        let mut config = Config::default();
+        assert!(!config.shutdown_switch);
+        config.apply("shutdown_switch", "true");
+        config.apply("sleep_switch", "true");
+        config.apply("usb_enabled", "true");
+        assert!(!config.shutdown_switch_allowed());
+        assert!(!config.sleep_switch_allowed());
+        config.apply("usb_enabled", "false");
+        assert!(config.shutdown_switch_allowed());
+        assert!(config.sleep_switch_allowed());
     }
 
     #[test]

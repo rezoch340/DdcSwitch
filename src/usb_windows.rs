@@ -1,8 +1,9 @@
-use super::{windows_instance_identity, Presence, UsbConfig};
+use super::{windows_instance_identity, Presence, RunGate, UsbConfig};
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 use windows::core::w;
 use windows::Win32::Devices::DeviceAndDriverInstallation::*;
+use windows::Win32::Devices::Properties::{DEVPKEY_Device_BusReportedDeviceDesc, DEVPROPTYPE, DEVPROP_TYPE_STRING};
 use windows::Win32::Foundation::{ERROR_NO_MORE_ITEMS, HWND};
 use windows::Win32::UI::WindowsAndMessaging::{KillTimer, SetTimer};
 
@@ -33,8 +34,11 @@ pub fn list_devices() -> Result<Vec<(String, String)>, String> {
                 let instance = String::from_utf16_lossy(
                     &instance[..instance.iter().position(|unit| *unit == 0).unwrap_or(instance.len())],
                 );
-                let Some(identity) = windows_instance_identity(&instance) else { continue };
-                let name = property(devices, &info, SPDRP_FRIENDLYNAME)
+                let Some(identity) = windows_instance_identity(&instance) else {
+                    continue;
+                };
+                let name = bus_name(devices, &info)
+                    .or_else(|| property(devices, &info, SPDRP_FRIENDLYNAME))
                     .or_else(|| property(devices, &info, SPDRP_DEVICEDESC))
                     .unwrap_or_else(|| identity.clone());
                 found.entry(identity).or_insert(name);
@@ -57,8 +61,34 @@ unsafe fn property(devices: HDEVINFO, info: &SP_DEVINFO_DATA, key: SETUP_DI_REGI
     Some(String::from_utf16_lossy(&units))
 }
 
+unsafe fn bus_name(devices: HDEVINFO, info: &SP_DEVINFO_DATA) -> Option<String> {
+    let mut buffer = [0u8; 2048];
+    let mut kind = DEVPROPTYPE::default();
+    SetupDiGetDevicePropertyW(
+        devices,
+        info,
+        &DEVPKEY_Device_BusReportedDeviceDesc,
+        &mut kind,
+        Some(&mut buffer),
+        None,
+        0,
+    )
+    .ok()?;
+    if kind != DEVPROP_TYPE_STRING {
+        return None;
+    }
+    let units: Vec<u16> = buffer
+        .chunks_exact(2)
+        .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+        .take_while(|unit| *unit != 0)
+        .collect();
+    let name = String::from_utf16_lossy(&units);
+    (!name.trim().is_empty()).then_some(name)
+}
+
 #[derive(Default)]
 pub struct Watcher {
+    pub gate: RunGate,
     config: UsbConfig,
     presence: Presence,
     suspended: bool,
@@ -67,12 +97,14 @@ pub struct Watcher {
 
 impl Watcher {
     pub fn configure(&mut self, hwnd: HWND, config: &UsbConfig) {
+        self.gate.pause();
         unsafe {
             let _ = KillTimer(Some(hwnd), USB_TIMER);
         }
         self.config = config.clone();
         self.presence.reset();
         if self.config.active() && !self.suspended {
+            self.gate.resume();
             if self.resume_until.is_some() {
                 // A settings save must not cancel the pending wake rebaseline.
                 self.changed(hwnd);
@@ -91,6 +123,7 @@ impl Watcher {
     }
 
     pub fn suspend(&mut self, hwnd: HWND) {
+        self.gate.pause();
         self.suspended = true;
         self.resume_until = None;
         self.presence.reset();
@@ -100,13 +133,14 @@ impl Watcher {
     }
 
     pub fn resume(&mut self, hwnd: HWND) {
+        self.gate.resume();
         self.suspended = false;
         self.presence.reset();
         self.resume_until = Some(Instant::now() + Duration::from_secs(2));
         self.changed(hwnd);
     }
 
-    pub fn timer(&mut self, hwnd: HWND) -> Option<u32> {
+    pub fn timer(&mut self, hwnd: HWND) -> Option<()> {
         unsafe {
             let _ = KillTimer(Some(hwnd), USB_TIMER);
         }
@@ -122,12 +156,15 @@ impl Watcher {
             self.presence.reset();
         }
         self.sample().and_then(|connected| {
+            if connected {
+                self.gate.resume();
+            } // Returning the device cancels a queued departure.
             crate::applog::log(format!(
                 "USB {} {}",
                 self.config.device,
                 if connected { "connected" } else { "disconnected" }
             ));
-            self.config.input(connected)
+            self.config.triggered(connected).then_some(())
         })
     }
 

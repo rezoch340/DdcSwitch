@@ -37,6 +37,13 @@ final class SettingsModel: ObservableObject {
         var key: UInt16?
     }
 
+    struct USBRow: Equatable {
+        var enabled: Bool
+        var monitor: Int
+        var name: String
+        var inputText: String
+    }
+
     enum Probe: Equatable {
         case idle
         case reading
@@ -64,14 +71,14 @@ final class SettingsModel: ObservableObject {
     }
 
     @Published var shutdownInputText = "" { didSet { commit() } }
-    @Published var shutdownSwitch = true { didSet { commit() } }
+    @Published var shutdownSwitch = false { didSet { commit() } }
     @Published var skipOnRestart = true { didSet { commit() } }
     @Published var sleepSwitch = false { didSet { commit() } }
     @Published private(set) var shutdownIssue: String?
 
     @Published var usbEnabled = false { didSet { commit() } }
     @Published var usbDeviceText = "" { didSet { commit() } }
-    @Published var usbConnectText = "" { didSet { commit() } }
+    @Published var usbTargets: [USBRow] = [] { didSet { commit() } }
     @Published private(set) var usbDevices: [String] = []
     @Published private(set) var usbListIssue: String?
     @Published private(set) var usbIssue: String?
@@ -106,8 +113,8 @@ final class SettingsModel: ObservableObject {
         skipOnRestart = cfg.skipOnRestart
         sleepSwitch = cfg.sleepSwitch
         usbEnabled = cfg.usb.enabled
-        usbDeviceText = cfg.usb.device
-        usbConnectText = cfg.usb.connectInput.map(String.init) ?? ""
+        usbDeviceText = cfg.usb.deviceLabel
+        usbTargets = cfg.usb.targets.map { USBRow(enabled: $0.enabled, monitor: $0.monitor, name: $0.name, inputText: $0.input.map(String.init) ?? "") }
         refreshUSB()
         notifySuccess = cfg.notifySuccess
         appearance = cfg.appearance
@@ -128,8 +135,26 @@ final class SettingsModel: ObservableObject {
     func refreshUSB() {
         do {
             usbDevices = try USBDevice.list().map(\.label)
+            if let identity = usbDeviceID(usbDeviceText), let label = usbDevices.first(where: { usbDeviceID($0) == identity }), label != usbDeviceText {
+                usbDeviceText = label
+            }
             usbListIssue = nil
         } catch { usbListIssue = "\(error)" }
+    }
+
+    func usbMonitorSelection(_ slot: Int) -> Int {
+        let target = usbTargets[slot]
+        let stored = target.monitor - 1
+        if monitorNames[safe: stored] == target.name { return stored }
+        return monitorNames.firstIndex(of: target.name) ?? -1
+    }
+
+    func selectUSBMonitor(_ slot: Int, index: Int) {
+        guard let name = monitorNames[safe: index] else { return }
+        var target = usbTargets[slot]
+        target.monitor = index + 1
+        target.name = name
+        usbTargets[slot] = target
     }
 
     private func setLaunchAtLogin(_ on: Bool) {
@@ -169,11 +194,12 @@ final class SettingsModel: ObservableObject {
         }
         probeState = .reading
         let index = monitorSelection + 1
+        let config = app.cfg
         DispatchQueue.global(qos: .userInitiated).async {
             var current: String
             var failed = false
             do {
-                current = inputLabel(try DDC.getInput(index: index, name: name))
+                current = config.inputTitle(try DDC.getInput(index: index, name: name))
             } catch {
                 current = "\(error)"
                 failed = true
@@ -212,11 +238,13 @@ final class SettingsModel: ObservableObject {
         cfg.notifySuccess = notifySuccess
         cfg.language = language
         cfg.appearance = appearance
-        cfg.usb = USBConfig(enabled: usbEnabled, device: usbDeviceID(usbDeviceText) ?? "",
-                            connectInput: parseInput(usbConnectText))
+        let identity = usbDeviceID(usbDeviceText) ?? ""
+        let deviceName = usbDeviceText.components(separatedBy: " — ").dropFirst().joined(separator: " — ")
+        cfg.usb = USBConfig(enabled: usbEnabled, device: identity, deviceName: deviceName,
+            targets: usbTargets.map { USBTarget(enabled: $0.enabled, monitor: $0.monitor, name: $0.name, input: parseInput($0.inputText)) })
         validateUSB()
-        // Do not keep an old action armed while the user is editing an invalid value.
-        if usbIssue != nil { cfg.usb.enabled = false }
+        // Invalid values disarm the affected action. Keep USB mode enabled so
+        // incomplete settings can never re-enable legacy power actions.
 
         let languageChanged = cfg.language != app.cfg.language
         saveError = app.apply(cfg, invalidRows: validate(cfg))
@@ -256,7 +284,7 @@ final class SettingsModel: ObservableObject {
             issues[i] = I18n.fmt(t.hotkeyInUse, hotkeyDisplay(cfg.bindings[i].mods, cfg.bindings[i].key))
         }
         rowIssues = issues
-        let needsInput = shutdownSwitch || sleepSwitch
+        let needsInput = !usbEnabled && (shutdownSwitch || sleepSwitch)
         shutdownIssue = needsInput && parseInput(shutdownInputText) == nil ? I18n.fmt(t.errShutdownInput, shutdownInputText) : nil
         return invalid
     }
@@ -264,12 +292,13 @@ final class SettingsModel: ObservableObject {
     private func validateUSB() {
         usbIssue = nil
         guard usbEnabled else { return }
-        if !usbConnectText.trimmingCharacters(in: .whitespaces).isEmpty && parseInput(usbConnectText) == nil {
-            usbIssue = USBStrings.current.invalid
-            return
-        }
-        if usbDeviceID(usbDeviceText) == nil || parseInput(usbConnectText) == nil {
+        let activeTargets = usbTargets.filter(\.enabled)
+        if usbDeviceID(usbDeviceText) == nil || activeTargets.isEmpty || activeTargets.contains(where: { $0.name.isEmpty || $0.monitor < 1 }) {
             usbIssue = USBStrings.current.choose
+        } else if activeTargets.contains(where: { parseInput($0.inputText) == nil }) {
+            usbIssue = USBStrings.current.invalid
+        } else if activeTargets.count == 2 && activeTargets[0].name == activeTargets[1].name && activeTargets[0].monitor == activeTargets[1].monitor {
+            usbIssue = USBStrings.current.duplicate
         }
     }
 }

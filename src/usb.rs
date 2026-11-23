@@ -1,24 +1,125 @@
 //! USB identity and edge detection, independent of the platform notification API.
 
+use std::sync::{
+    atomic::{AtomicU64, Ordering},
+    Arc,
+};
+
+pub const TARGET_SLOTS: usize = 2;
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct UsbTarget {
+    pub enabled: bool,
+    pub monitor: usize,
+    pub name: String,
+    pub input: Option<u32>,
+}
+
+impl UsbTarget {
+    pub fn valid(&self) -> bool {
+        self.monitor > 0 && !self.name.trim().is_empty() && self.input.is_some_and(|input| (1..=65535).contains(&input))
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct UsbConfig {
     pub enabled: bool,
     pub device: String,
-    pub connect_input: Option<u32>,
+    pub device_name: String,
+    pub targets: [UsbTarget; TARGET_SLOTS],
 }
 
 impl UsbConfig {
     pub fn active(&self) -> bool {
-        self.enabled && device_id(&self.device).is_some() && self.connect_input.is_some()
+        self.enabled
+            && device_id(&self.device).is_some()
+            && self.targets.iter().any(|target| target.enabled && target.valid())
     }
 
-    pub fn input(&self, connected: bool) -> Option<u32> {
-        if connected {
-            self.connect_input
+    pub fn triggered(&self, connected: bool) -> bool {
+        self.active() && !connected
+    }
+
+    pub fn device_label(&self) -> String {
+        if self.device_name.is_empty() {
+            self.device.clone()
         } else {
-            None
+            format!("{} — {}", self.device, self.device_name)
         }
     }
+}
+
+/// A new epoch invalidates queued work even if the app resumes before it gets the DDC lock.
+#[derive(Clone)]
+pub struct RunGate(Arc<AtomicU64>);
+
+impl Default for RunGate {
+    fn default() -> Self {
+        Self(Arc::new(AtomicU64::new(1)))
+    }
+}
+
+#[derive(Clone)]
+pub struct RunTicket {
+    gate: RunGate,
+    epoch: u64,
+}
+
+impl RunGate {
+    pub fn pause(&self) {
+        let _ = self.0.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |epoch| Some(epoch.wrapping_add(2) | 1));
+    }
+    pub fn resume(&self) {
+        let _ = self.0.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |epoch| Some(epoch.wrapping_add(2) & !1));
+    }
+    pub fn ticket(&self) -> RunTicket {
+        RunTicket { gate: self.clone(), epoch: self.0.load(Ordering::SeqCst) }
+    }
+}
+
+impl RunTicket {
+    pub fn valid(&self) -> bool {
+        self.epoch & 1 == 0 && self.gate.0.load(Ordering::SeqCst) == self.epoch
+    }
+}
+
+/// Resolve all targets against one snapshot. Never fall back to an unrelated screen.
+/// A failed/missing screen does not prevent the next screen from being attempted.
+pub fn execute_targets(
+    targets: &[UsbTarget],
+    names: &[String],
+    permitted: impl Fn() -> bool,
+    mut write: impl FnMut(usize, u32) -> Result<(), String>,
+) -> Vec<Result<String, String>> {
+    let mut results = Vec::new();
+    let mut used = Vec::new();
+    for target in targets.iter().filter(|target| target.enabled) {
+        if !permitted() {
+            break;
+        }
+        let matching: Vec<usize> =
+            names.iter().enumerate().filter_map(|(index, name)| (*name == target.name).then_some(index)).collect();
+        let selected = match matching.as_slice() {
+            [index] => Some(*index),
+            _ => target.monitor.checked_sub(1).filter(|index| matching.contains(index)),
+        };
+        if !target.valid() || selected.is_none() {
+            results.push(Err(format!("USB target unavailable or invalid: {}", target.name)));
+            continue;
+        }
+        let selected = selected.unwrap();
+        if used.contains(&selected) {
+            results.push(Err(format!("Duplicate USB target: {}", target.name)));
+            continue;
+        }
+        used.push(selected);
+        let result = write(selected, target.input.unwrap());
+        if !permitted() {
+            break;
+        }
+        results.push(result.map(|_| format!("{} → {}", target.name, target.input.unwrap())));
+    }
+    results
 }
 
 /// VID:PID, in hexadecimal. A description may follow it in an editable picker.
@@ -105,17 +206,17 @@ mod tests {
     }
 
     #[test]
-    fn only_connections_switch_and_default_is_off() {
+    fn only_removals_switch_and_default_is_off() {
         let mut config = UsbConfig::default();
         assert!(!config.active());
         config.enabled = true;
         config.device = "1234:5678".into();
         assert!(!config.active());
-        assert_eq!(config.input(true), None);
-        config.connect_input = Some(8);
+        assert!(!config.triggered(false));
+        config.targets[0] = UsbTarget { enabled: true, monitor: 1, name: "G7C II".into(), input: Some(7) };
         assert!(config.active());
-        assert_eq!(config.input(true), Some(8));
-        assert_eq!(config.input(false), None);
+        assert!(!config.triggered(true));
+        assert!(config.triggered(false));
         config.enabled = false;
         assert!(!config.active());
     }
@@ -139,22 +240,113 @@ mod tests {
     }
 
     #[test]
-    fn only_selected_keyboard_arrivals_send_commands() {
-        let config = UsbConfig { enabled: true, device: "1234:5678".into(), connect_input: Some(8) };
+    fn only_selected_keyboard_removals_send_commands() {
+        let config = UsbConfig {
+            enabled: true,
+            device: "1234:5678".into(),
+            targets: [target("First", 1, 7), UsbTarget::default()],
+            ..Default::default()
+        };
         let mut presence = Presence::default();
-        let snapshots = [
-            vec![],
-            vec!["ABCD:EF01"],
-            vec!["ABCD:EF01", "1234:5678"],
-            vec!["1234:5678"],
-            vec![],
-            vec!["1234:5678"],
-        ];
-        let commands: Vec<u32> = snapshots
+        let snapshots =
+            [vec![], vec!["ABCD:EF01"], vec!["ABCD:EF01", "1234:5678"], vec!["1234:5678"], vec![], vec!["1234:5678"]];
+        let commands: Vec<bool> = snapshots
             .iter()
             .filter_map(|devices| presence.observe(devices.contains(&config.device.as_str())))
-            .filter_map(|connected| config.input(connected))
+            .filter(|connected| config.triggered(*connected))
             .collect();
-        assert_eq!(commands, vec![8, 8]);
+        assert_eq!(commands, vec![false]);
+    }
+
+    fn target(name: &str, monitor: usize, input: u32) -> UsbTarget {
+        UsbTarget { enabled: true, monitor, name: name.into(), input: Some(input) }
+    }
+
+    #[test]
+    fn pause_cancels_queued_work_even_after_resume() {
+        let gate = RunGate::default();
+        assert!(!gate.ticket().valid());
+        gate.resume();
+        let queued = gate.ticket();
+        assert!(queued.valid());
+        gate.pause();
+        assert!(!queued.valid());
+        gate.resume();
+        assert!(!queued.valid());
+        assert!(gate.ticket().valid());
+        let targets = [target("First", 1, 7), target("Second", 2, 8)];
+        let names = ["First".into(), "Second".into()];
+        let current = gate.ticket();
+        let mut writes = 0;
+        execute_targets(
+            &targets,
+            &names,
+            || current.valid(),
+            |_, _| {
+                writes += 1;
+                gate.pause();
+                Ok(())
+            },
+        );
+        assert_eq!(writes, 1);
+        execute_targets(
+            &targets,
+            &names,
+            || queued.valid(),
+            |_, _| {
+                writes += 1;
+                Ok(())
+            },
+        );
+        assert_eq!(writes, 1);
+    }
+
+    #[test]
+    fn batch_follows_names_and_continues_after_failure() {
+        let targets = [target("First", 1, 7), target("Second", 2, 8)];
+        let mut writes = Vec::new();
+        let results = execute_targets(
+            &targets,
+            &["Second".into(), "First".into()],
+            || true,
+            |index, input| {
+                writes.push((index, input));
+                if index == 1 {
+                    Err("first screen failed".into())
+                } else {
+                    Ok(())
+                }
+            },
+        );
+        assert_eq!(writes, [(1, 7), (0, 8)]);
+        assert!(results[0].is_err());
+        assert!(results[1].is_ok());
+    }
+
+    #[test]
+    fn missing_and_duplicate_targets_never_switch_another_screen() {
+        let targets = [target("First", 1, 7), target("Second", 2, 8)];
+        let mut writes = Vec::new();
+        execute_targets(
+            &targets,
+            &["Second".into()],
+            || true,
+            |index, input| {
+                writes.push((index, input));
+                Ok(())
+            },
+        );
+        assert_eq!(writes, [(0, 8)]);
+        writes.clear();
+        execute_targets(
+            &[targets[0].clone(), targets[0].clone()],
+            &["First".into()],
+            || true,
+            |index, input| {
+                writes.push((index, input));
+                Ok(())
+            },
+        );
+        assert_eq!(writes, [(0, 7)]);
     }
 }

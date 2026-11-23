@@ -29,9 +29,9 @@ use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Shutdown::{ShutdownBlockReasonCreate, ShutdownBlockReasonDestroy};
 use windows::Win32::System::Threading::{CreateMutexW, SetProcessShutdownParameters};
 use windows::Win32::UI::Controls::{
-    InitCommonControlsEx, TaskDialogIndirect, ICC_HOTKEY_CLASS, ICC_STANDARD_CLASSES, INITCOMMONCONTROLSEX, TASKDIALOGCONFIG,
-    TASKDIALOG_NOTIFICATIONS, TDCBF_OK_BUTTON, TDF_ALLOW_DIALOG_CANCELLATION, TDF_ENABLE_HYPERLINKS, TDF_USE_HICON_MAIN,
-    TDN_HYPERLINK_CLICKED,
+    InitCommonControlsEx, TaskDialogIndirect, ICC_HOTKEY_CLASS, ICC_STANDARD_CLASSES, INITCOMMONCONTROLSEX,
+    TASKDIALOGCONFIG, TASKDIALOG_NOTIFICATIONS, TDCBF_OK_BUTTON, TDF_ALLOW_DIALOG_CANCELLATION, TDF_ENABLE_HYPERLINKS,
+    TDF_USE_HICON_MAIN, TDN_HYPERLINK_CLICKED,
 };
 use windows::Win32::UI::HiDpi::{SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_SYSTEM_AWARE};
 use windows::Win32::UI::Input::KeyboardAndMouse::{RegisterHotKey, UnregisterHotKey, HOT_KEY_MODIFIERS, MOD_NOREPEAT};
@@ -64,6 +64,8 @@ const NIN_KEYSELECT: u32 = NIN_SELECT | 0x1;
 /// applications, so the input only flips once every other app has agreed to the
 /// shutdown (a "these apps are preventing shutdown" screen stays visible).
 const SHUTDOWN_LEVEL: u32 = 0x100;
+// USB mode should stop listening before other applications tear down devices.
+const USB_SHUTDOWN_LEVEL: u32 = 0x3FF;
 
 const GITHUB_URL: &str = "https://github.com/pokoblin/DdcSwitch";
 
@@ -192,16 +194,14 @@ fn run_gui(autostarted: bool) {
         usb.configure(hwnd, &cfg.usb);
         APP.with(|a| *a.borrow_mut() = Some(App { hwnd, cfg: cfg.clone(), icon: icon_small, usb }));
 
-        if let Err(e) = SetProcessShutdownParameters(SHUTDOWN_LEVEL, 0) {
-            applog::log(format!("SetProcessShutdownParameters failed: {e}"));
-        }
+        configure_shutdown_order(&cfg);
         tray_add(hwnd);
         let errors = register_hotkeys(hwnd, &cfg);
         applog::log(format!(
             "Started v{}, config: {}, switch at shutdown: {}",
             env!("CARGO_PKG_VERSION"),
             config::config_path().display(),
-            if cfg.shutdown_switch { cfg.input_title(cfg.shutdown_input) } else { "off".into() }
+            if cfg.shutdown_switch_allowed() { cfg.input_title(cfg.shutdown_input) } else { "off".into() }
         ));
         if !errors.is_empty() {
             notify(t().hotkeys_failed_title, &errors.join("\n"), true);
@@ -239,6 +239,9 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
         }
         WM_SWITCH_DONE => {
             let r = Box::from_raw(lparam.0 as *mut SwitchResult);
+            if r.ticket.as_ref().is_some_and(|ticket| !usb_permitted(ticket)) {
+                return LRESULT(0);
+            }
             if !r.ok {
                 notify(t().switch_failed_title, &r.message, true);
             } else if current_config().notify_success {
@@ -257,6 +260,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
         }
         WM_ENDSESSION => {
             if wparam.0 != 0 {
+                with_app(|app| app.usb.suspend(hwnd));
                 on_end_session(hwnd, lparam.0 as u32);
             } else {
                 applog::log("WM_ENDSESSION(FALSE): shutdown was cancelled");
@@ -276,18 +280,28 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
         WM_DEVICECHANGE => {
             // DBT_DEVNODES_CHANGED is broadcast to top-level windows for USB changes.
             if matches!(wparam.0, 0x0007 | 0x8000 | 0x8004) {
-                with_app(|app| app.usb.changed(hwnd));
+                with_app(|app| {
+                    if GetSystemMetrics(SM_SHUTTINGDOWN) != 0 {
+                        app.usb.suspend(hwnd);
+                    } else {
+                        app.usb.changed(hwnd);
+                    }
+                });
             }
             LRESULT(1)
         }
         WM_TIMER if wparam.0 == usb::USB_TIMER => {
-            let input = with_app(|app| app.usb.timer(hwnd)).flatten();
-            if let Some(input) = input {
-                switch_async(hwnd, &current_config(), input, "usb");
-            }
+            with_app(|app| {
+                if GetSystemMetrics(SM_SHUTTINGDOWN) != 0 {
+                    app.usb.suspend(hwnd);
+                } else if app.usb.timer(hwnd).is_some() {
+                    switch_usb_async(hwnd, app.cfg.usb.targets.clone(), app.usb.gate.ticket());
+                }
+            });
             LRESULT(0)
         }
         WM_DESTROY => {
+            with_app(|app| app.usb.suspend(hwnd));
             settings::close();
             for id in 1..=HOTKEY_SLOTS as i32 {
                 let _ = UnregisterHotKey(Some(hwnd), id);
@@ -314,6 +328,47 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
 struct SwitchResult {
     ok: bool,
     message: String,
+    ticket: Option<usb::RunTicket>,
+}
+
+fn usb_permitted(ticket: &usb::RunTicket) -> bool {
+    ticket.valid() && unsafe { GetSystemMetrics(SM_SHUTTINGDOWN) == 0 }
+}
+
+fn switch_usb_async(hwnd: HWND, targets: [usb::UsbTarget; usb::TARGET_SLOTS], ticket: usb::RunTicket) {
+    let window = hwnd.0 as isize;
+    std::thread::spawn(move || {
+        let results = ddc::switch_usb(&targets, || usb_permitted(&ticket));
+        if !usb_permitted(&ticket) {
+            applog::log("[usb] pending switch cancelled");
+            return;
+        }
+        let mut messages = Vec::new();
+        let mut success = true;
+        for result in results {
+            match result {
+                Ok(message) => {
+                    applog::log(format!("[usb] command sent: {message}"));
+                    messages.push(message);
+                }
+                Err(error) => {
+                    applog::log(format!("[usb] FAILED: {error}"));
+                    messages.push(error);
+                    success = false;
+                }
+            }
+        }
+        if messages.is_empty() {
+            return;
+        }
+        let boxed =
+            Box::into_raw(Box::new(SwitchResult { ok: success, message: messages.join("\n"), ticket: Some(ticket) }));
+        unsafe {
+            if PostMessageW(Some(HWND(window as _)), WM_SWITCH_DONE, WPARAM(0), LPARAM(boxed as isize)).is_err() {
+                drop(Box::from_raw(boxed));
+            }
+        }
+    });
 }
 
 fn switch_async(hwnd: HWND, cfg: &Config, input: u32, source: &'static str) {
@@ -330,7 +385,7 @@ fn switch_async(hwnd: HWND, cfg: &Config, input: u32, source: &'static str) {
         if !ok {
             applog::log(format!("    {message}"));
         }
-        let boxed = Box::into_raw(Box::new(SwitchResult { ok, message }));
+        let boxed = Box::into_raw(Box::new(SwitchResult { ok, message, ticket: None }));
         unsafe {
             if PostMessageW(Some(HWND(hwnd_raw as _)), WM_SWITCH_DONE, WPARAM(0), LPARAM(boxed as isize)).is_err() {
                 drop(Box::from_raw(boxed));
@@ -358,7 +413,7 @@ fn switch_now(hwnd: HWND, cfg: &Config, reason: &str) {
 fn on_end_session(hwnd: HWND, flags: u32) {
     let cfg = current_config();
     applog::log(format!("WM_ENDSESSION(TRUE) (lParam=0x{flags:08X})"));
-    if !cfg.shutdown_switch {
+    if !cfg.shutdown_switch_allowed() {
         applog::log("    switching at shutdown is off, skipped");
         return;
     }
@@ -400,7 +455,7 @@ fn on_end_session(hwnd: HWND, flags: u32) {
 
 fn on_suspend() {
     let cfg = current_config();
-    if !cfg.sleep_switch {
+    if !cfg.sleep_switch_allowed() {
         return;
     }
     applog::log("PBT_APMSUSPEND (going to sleep)");
@@ -443,6 +498,7 @@ pub fn apply_settings(new: Config, autostart_on: bool) -> Vec<String> {
         }
     }
     i18n::apply(&new.language);
+    configure_shutdown_order(&new);
     let Some(hwnd) = with_app(|a| {
         if a.cfg.usb != new.usb || a.cfg.monitor != new.monitor || a.cfg.monitor_name != new.monitor_name {
             a.usb.configure(a.hwnd, &new.usb);
@@ -456,6 +512,13 @@ pub fn apply_settings(new: Config, autostart_on: bool) -> Vec<String> {
     tray_update_tip(hwnd);
     applog::log("Settings updated");
     errors
+}
+
+fn configure_shutdown_order(config: &Config) {
+    let level = if config.usb.enabled { USB_SHUTDOWN_LEVEL } else { SHUTDOWN_LEVEL };
+    if let Err(error) = unsafe { SetProcessShutdownParameters(level, 0) } {
+        applog::log(format!("SetProcessShutdownParameters failed: {error}"));
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -522,7 +585,9 @@ fn tray_delete(hwnd: HWND) {
 }
 
 fn notify(title: &str, text: &str, error: bool) {
-    let Some(hwnd) = with_app(|a| a.hwnd) else { return };
+    let Some(hwnd) = with_app(|a| a.hwnd) else {
+        return;
+    };
     let mut nid = tray_data(hwnd);
     nid.uFlags = NIF_INFO;
     nid.dwInfoFlags = if error { NIIF_ERROR } else { NIIF_INFO };
@@ -560,7 +625,7 @@ fn show_menu(hwnd: HWND) {
         }
         add(MF_SEPARATOR, 0, "");
         add(
-            MF_STRING | checked(cfg.shutdown_switch),
+            MF_STRING | checked(cfg.shutdown_switch_allowed()) | if cfg.usb.enabled { MF_GRAYED } else { MF_UNCHECKED },
             ID_TOGGLE_SHUTDOWN,
             &fmt(t().menu_shutdown_switch, &[&cfg.input_title(cfg.shutdown_input)]),
         );
@@ -584,6 +649,9 @@ fn show_menu(hwnd: HWND) {
         match cmd {
             0 => {}
             ID_TOGGLE_SHUTDOWN => {
+                if cfg.usb.enabled {
+                    return;
+                }
                 let mut new = cfg.clone();
                 new.shutdown_switch = !new.shutdown_switch;
                 apply_settings(new, autostart_on);

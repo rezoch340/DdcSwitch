@@ -248,7 +248,18 @@ impl Builder {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn add(&self, class: PCWSTR, text: &str, style: u32, ex: WINDOW_EX_STYLE, x: i32, y: i32, w: i32, h: i32, id: i32) -> HWND {
+    fn add(
+        &self,
+        class: PCWSTR,
+        text: &str,
+        style: u32,
+        ex: WINDOW_EX_STYLE,
+        x: i32,
+        y: i32,
+        w: i32,
+        h: i32,
+        id: i32,
+    ) -> HWND {
         unsafe {
             let hwnd = CreateWindowExW(
                 ex,
@@ -315,16 +326,28 @@ pub fn open(cfg: Config) {
         let (w, h) = (rc.right - rc.left, rc.bottom - rc.top);
         let x = (GetSystemMetrics(SM_CXSCREEN) - w) / 2;
         let y = (GetSystemMetrics(SM_CYSCREEN) - h) / 2;
-        let Ok(hwnd) =
-            CreateWindowExW(ex, CLASS, &HSTRING::from(tr.settings_title), style, x, y, w, h, None, None, Some(hinst), None)
-        else {
+        let Ok(hwnd) = CreateWindowExW(
+            ex,
+            CLASS,
+            &HSTRING::from(tr.settings_title),
+            style,
+            x,
+            y,
+            w,
+            h,
+            None,
+            None,
+            Some(hinst),
+            None,
+        ) else {
             return;
         };
         let (small, big) = ICONS.with(|c| c.get());
         send(hwnd, WM_SETICON, ICON_SMALL as usize, small);
         send(hwnd, WM_SETICON, ICON_BIG as usize, big);
 
-        let mut ncm = NONCLIENTMETRICSW { cbSize: std::mem::size_of::<NONCLIENTMETRICSW>() as u32, ..Default::default() };
+        let mut ncm =
+            NONCLIENTMETRICSW { cbSize: std::mem::size_of::<NONCLIENTMETRICSW>() as u32, ..Default::default() };
         let _ = SystemParametersInfoForDpi(
             SPI_GETNONCLIENTMETRICS.0,
             ncm.cbSize,
@@ -404,10 +427,8 @@ pub fn open(cfg: Config) {
         for (_, strings) in i18n::LANGUAGES {
             add_item(language, strings.lang_name);
         }
-        let lang_sel = i18n::LANGUAGES
-            .iter()
-            .position(|(code, _)| code.eq_ignore_ascii_case(&cfg.language))
-            .map_or(0, |i| i + 1);
+        let lang_sel =
+            i18n::LANGUAGES.iter().position(|(code, _)| code.eq_ignore_ascii_case(&cfg.language)).map_or(0, |i| i + 1);
         send(language, CB_SETCURSEL, lang_sel, 0);
 
         UI.with(|u| {
@@ -529,10 +550,12 @@ fn update_enabled_states() {
                 enable(h, on);
             }
         }
-        let on = checked(u.sd_enabled);
-        enable(u.sd_input, on);
-        enable(u.sd_restart, on);
-        enable(u.sleep, on);
+        let power_allowed = !u.base.usb.enabled;
+        let shutdown_on = checked(u.sd_enabled);
+        enable(u.sd_enabled, power_allowed);
+        enable(u.sd_input, power_allowed && (shutdown_on || checked(u.sleep)));
+        enable(u.sd_restart, power_allowed && shutdown_on);
+        enable(u.sleep, power_allowed);
     });
 }
 
@@ -586,7 +609,7 @@ fn collect(u: &Ui) -> Result<(Config, bool), String> {
     let sd_text = get_text(u.sd_input);
     match config::parse_input(&sd_text) {
         Some(v) => cfg.shutdown_input = v,
-        None if cfg.shutdown_switch => return Err(fmt(tr.err_shutdown_input, &[&sd_text])),
+        None if cfg.shutdown_switch_allowed() => return Err(fmt(tr.err_shutdown_input, &[&sd_text])),
         None => {}
     }
     cfg.skip_on_restart = checked(u.sd_restart);

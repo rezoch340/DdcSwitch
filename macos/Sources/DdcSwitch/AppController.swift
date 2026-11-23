@@ -57,7 +57,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             self.switchAsync(to: b.input, source: "hotkey")
         }
         let failures = registerHotkeys()
-        usb.onInput = { [weak self] input in self?.switchAsync(to: input, source: "usb") }
+        usb.onRemoval = { [weak self] targets, permitted in self?.switchUSB(targets, permitted: permitted) }
         usb.onError = { message in Notifier.shared.post("USB", message) }
         usb.configure(cfg.usb)
         power.onWillSleep = { [weak self] in self?.usb.suspend(); self?.onWillSleep() }
@@ -65,7 +65,8 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         power.start()
 
         let ws = NSWorkspace.shared.notificationCenter
-        ws.addObserver(forName: NSWorkspace.willPowerOffNotification, object: nil, queue: .main) { _ in
+        ws.addObserver(forName: NSWorkspace.willPowerOffNotification, object: nil, queue: .main) { [weak self] _ in
+            self?.usb.suspend()
             AppLog.log("NSWorkspaceWillPowerOff: macOS is logging out, restarting or shutting down")
         }
         let dist = DistributedNotificationCenter.default()
@@ -73,7 +74,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         dist.addObserver(forName: AppIdentity.quit, object: nil, queue: .main) { _ in NSApp.terminate(nil) }
 
         AppLog.log("Started v\(AppIdentity.version), config: \(Paths.configFile.path), switch at shutdown: "
-            + (cfg.shutdownSwitch ? cfg.inputTitle(cfg.shutdownInput) : "off"))
+            + (cfg.shutdownSwitchAllowed ? cfg.inputTitle(cfg.shutdownInput) : "off"))
         if !failures.isEmpty {
             let lines = failures.map { I18n.fmt(I18n.t.hotkeyInUse, hotkeyDisplay(cfg.bindings[$0].mods, cfg.bindings[$0].key)) }
             Notifier.shared.post(I18n.t.hotkeysFailedTitle, lines.joined(separator: "\n"))
@@ -90,6 +91,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        usb.suspend()
         guard let event = NSAppleEventManager.shared().currentAppleEvent,
               event.eventClass == fourCC("aevt"), event.eventID == fourCC("quit") else {
             return .terminateNow // quit from the menu, `--quit` or a script
@@ -122,6 +124,30 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     // -----------------------------------------------------------------------
     // Switching
+
+    private func switchUSB(_ targets: [USBTarget], permitted: @escaping () -> Bool) {
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let results = DDC.switchUSB(targets, permitted: permitted)
+            guard permitted() else { AppLog.log("[usb] pending switch cancelled"); return }
+            var failures: [String] = []
+            var successes: [String] = []
+            for result in results {
+                switch result {
+                case .success(let message):
+                    successes.append(message)
+                    AppLog.log("[usb] command sent: \(message)")
+                case .failure(let error):
+                    failures.append(error.description)
+                    AppLog.log("[usb] FAILED: \(error)")
+                }
+            }
+            DispatchQueue.main.async {
+                guard permitted(), let self else { return }
+                if !failures.isEmpty { Notifier.shared.post(I18n.t.switchFailedTitle, failures.joined(separator: "\n")) }
+                else if self.cfg.notifySuccess && !successes.isEmpty { Notifier.shared.post(I18n.t.switchedTitle, successes.joined(separator: "\n")) }
+            }
+        }
+    }
 
     func switchAsync(to input: UInt32, source: String) {
         let (index, name, title) = (cfg.monitor, cfg.monitorName, cfg.inputTitle(input))
@@ -159,7 +185,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func onShutdown(restart: Bool) {
-        guard cfg.shutdownSwitch else {
+        guard cfg.shutdownSwitchAllowed else {
             AppLog.log("    switching at shutdown is off, skipped")
             return
         }
@@ -171,7 +197,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func onWillSleep() {
-        guard cfg.sleepSwitch else { return }
+        guard cfg.sleepSwitchAllowed else { return }
         AppLog.log("kIOMessageSystemWillSleep (going to sleep)")
         switchNow(reason: "sleep")
     }
@@ -268,7 +294,8 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let shutdown = NSMenuItem(title: I18n.fmt(t.menuShutdownSwitch, cfg.inputTitle(cfg.shutdownInput)),
                                   action: #selector(toggleShutdown), keyEquivalent: "")
         shutdown.target = self
-        shutdown.state = cfg.shutdownSwitch ? .on : .off
+        shutdown.state = cfg.shutdownSwitchAllowed ? .on : .off
+        if cfg.usb.enabled { shutdown.action = nil }
         menu.addItem(shutdown)
         let login = NSMenuItem(title: t.menuLaunchAtLogin, action: #selector(toggleLaunchAtLogin), keyEquivalent: "")
         login.target = self
@@ -294,6 +321,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc private func toggleShutdown() {
+        guard !cfg.usb.enabled else { return }
         var new = cfg
         new.shutdownSwitch.toggle()
         if let error = apply(new, invalidRows: invalidRows) { Notifier.shared.post("DdcSwitch", error) }
