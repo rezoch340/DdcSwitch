@@ -278,13 +278,13 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             LRESULT(1)
         }
         WM_DEVICECHANGE => {
-            // DBT_DEVNODES_CHANGED is broadcast to top-level windows for USB changes.
+            // Registered USB interface events arrive before the generic PnP tree settles.
             if matches!(wparam.0, 0x0007 | 0x8000 | 0x8004) {
                 with_app(|app| {
                     if GetSystemMetrics(SM_SHUTTINGDOWN) != 0 {
                         app.usb.suspend(hwnd);
                     } else {
-                        app.usb.changed(hwnd);
+                        app.usb.device_changed(hwnd, wparam.0);
                     }
                 });
             }
@@ -301,7 +301,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             LRESULT(0)
         }
         WM_DESTROY => {
-            with_app(|app| app.usb.suspend(hwnd));
+            with_app(|app| app.usb.stop(hwnd));
             settings::close();
             for id in 1..=HOTKEY_SLOTS as i32 {
                 let _ = UnregisterHotKey(Some(hwnd), id);
@@ -338,7 +338,9 @@ fn usb_permitted(ticket: &usb::RunTicket) -> bool {
 fn switch_usb_async(hwnd: HWND, targets: [usb::UsbTarget; usb::TARGET_SLOTS], ticket: usb::RunTicket) {
     let window = hwnd.0 as isize;
     std::thread::spawn(move || {
+        let started = Instant::now();
         let results = ddc::switch_usb(&targets, || usb_permitted(&ticket));
+        applog::log(format!("[usb] DDC batch completed in {} ms", started.elapsed().as_millis()));
         if !usb_permitted(&ticket) {
             applog::log("[usb] pending switch cancelled");
             return;
